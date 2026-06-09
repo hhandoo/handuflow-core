@@ -80,16 +80,14 @@ Dependency pins are defined only in **`pyproject.toml`**. The `requirements*.txt
 ```text
 dev  ──push──►  (no GitHub Actions)
   │
-  └── PR dev → main  ──►  test → merge →  deploy (PyPI, if release PR)
+  └── PR dev → main  ──merge──►  one Main run: test → build → deploy
 ```
 
 | Event | What runs |
 |-------|-----------|
 | Push to **`dev`** | Nothing |
-| PR **`dev` → `main`** (open / update) | **Test** → version check → build |
-| PR **`dev` → `main`** **merged** | **Test** → build → **Deploy** to PyPI (if `CHANGELOG.md` has release notes) |
-
-Push to **`dev`** freely with no CI. Open a PR into **`main`** — tests run on every push to the PR. When you merge, tests run again and deploy follows automatically for release PRs.
+| PR **`dev` → `main`** (open / update) | Nothing — run tests locally before merging |
+| PR **`dev` → `main`** **merged** | **One** [Main](../.github/workflows/main.yml) run: test → build → deploy |
 
 **GitHub branch protection (recommended):** require PR reviews + status checks on **`main`**; disallow direct pushes to **`main`**.
 
@@ -138,19 +136,20 @@ git commit -m "Release 0.0.2"
 git push origin dev
 ```
 
-Open a pull request **`dev` → `main`**. When tests pass, merge the PR. The [Main](../.github/workflows/main.yml) workflow runs **test** on the PR, then **deploy** when merged.
+Open a pull request **`dev` → `main`**, merge when ready. **One** [Main](../.github/workflows/main.yml) workflow run starts on merge: test → build → deploy.
+
+Run tests locally before merging: `pytest tests/regression -v`
 
 ### 4. Automated test and deploy
 
-[`.github/workflows/main.yml`](../.github/workflows/main.yml) (`Main`) runs **only** on pull requests **`dev` → `main`**:
+[`.github/workflows/main.yml`](../.github/workflows/main.yml) runs **once**, only when a PR **`dev` → `main`** is **merged**:
 
-**While PR is open (each push to `dev`):**
 1. Test (Python 3.11 / 3.12 + Spark integration)
 2. Version check
 3. Package build
+4. Deploy to PyPI + GitHub Release (if `CHANGELOG.md` has a section for `pyproject.toml` version)
 
-**When PR is merged into `main`:**
-1. Deploy to PyPI + GitHub Release (if `CHANGELOG.md` has a section for `pyproject.toml` version)
+If tests fail after merge, deploy does not run (`deploy` needs `build` needs `test`).
 
 Requires branch protection so merge is blocked until PR tests pass.
 

@@ -73,7 +73,7 @@ python -m tests.e2e.run_e2e --smoke
 
 - **Single source of truth:** `pyproject.toml` → `[project].version` (current published version)
 - **Next release:** edit [`RELEASE.toml`](../RELEASE.toml), then `python scripts/release.py prepare`
-- **Branch flow:** push only to **`dev`** (no CI) → PR **`dev` → `main`** (test) → merge (test + deploy) — see [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md)
+- **Branch flow:** push only to **`dev`** (no CI) → PR **`dev` → `main`** → merge triggers **one** Main run (test → deploy) — see [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md)
 
 ## Pull requests
 

@@ -12,14 +12,12 @@ Examples::
 
     python scripts/release.py check      # validate RELEASE.toml only
     python scripts/release.py prepare    # apply version + changelog updates
-    python scripts/release.py prepare --tag   # also create git tag vX.Y.Z
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date
@@ -179,12 +177,6 @@ notes = \"\"\"
     )
 
 
-def create_git_tag(version: str) -> None:
-    tag = f"v{version}"
-    subprocess.run(["git", "tag", tag], cwd=ROOT, check=True)
-    print(f"Created git tag {tag}")
-
-
 def cmd_check(_: argparse.Namespace) -> int:
     current = read_current_version()
     pending = load_pending_release()
@@ -219,14 +211,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     print(f"  reset   {RELEASE_CONTROL.relative_to(ROOT)} (next suggested: {next_patch_version(pending.version)})")
     print()
     print("Next steps:")
+    print("  git checkout dev")
     print("  git add pyproject.toml CHANGELOG.md RELEASE.toml")
     print(f'  git commit -m "Release {pending.version}"')
-    if args.tag:
-        create_git_tag(pending.version)
-        print("  git push origin main --tags")
-    else:
-        print(f"  git tag v{pending.version}")
-        print("  git push origin main --tags")
+    print("  git push origin dev")
+    print("  # Open PR dev → main; merge when CI passes to publish PyPI")
 
     return 0
 
@@ -245,11 +234,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print planned changes without writing files",
-    )
-    prepare.add_argument(
-        "--tag",
-        action="store_true",
-        help="Create git tag vX.Y.Z after updating files",
     )
     prepare.set_defaults(func=cmd_prepare)
 

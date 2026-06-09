@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,65 +7,52 @@ name = "handuflow"
 version = "0.0.1"
 description = "Spark + Delta Lake orchestration for medallion pipelines: CDC, SCD Type 2, data quality, lineage, and Excel reporting"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 
 authors = [
   { name = "Harsh Handoo", email = "handoo.harsh@gmail.com" }
 ]
 
-keywords = ["spark", "delta-lake", "etl", "data-quality", "medallion", "databricks", "unity-catalog"]
+keywords = [
+  "spark",
+  "delta-lake",
+  "etl",
+  "data-quality",
+  "medallion",
+  "databricks",
+  "unity-catalog",
+]
 
 classifiers = [
-  "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Operating System :: OS Independent",
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Topic :: Database",
   "Topic :: Scientific/Engineering",
   "Typing :: Typed",
 ]
 
 dependencies = [
-  "certifi==2026.1.4",
-  "charset-normalizer==3.4.4",
-  "contourpy==1.3.3",
-  "cycler==0.12.1",
-  "delta-spark==3.1.0",
-  "et_xmlfile==2.0.0",
-  "fonttools==4.61.1",
-  "idna==3.11",
-  "importlib_metadata==8.7.1",
-  "kiwisolver==1.4.9",
-  "matplotlib==3.10.8",
-  "numpy==2.4.2",
-  "openpyxl==3.1.5",
-  "packaging==26.0",
-  "pandas==3.0.0",
-  "pillow==12.1.0",
-  "pyparsing==3.3.2",
-  "python-dateutil==2.9.0.post0",
-  "requests==2.32.5",
-  "six==1.17.0",
-  "urllib3==2.6.3",
-  "zipp==3.23.0",
+  "delta-spark>=3.1,<4.0",
+  "openpyxl>=3.1,<4.0",
+  "pandas>=2.2,<3.0",
+  "matplotlib>=3.8,<4.0",
+  "requests>=2.32,<3.0",
 ]
 
 [project.optional-dependencies]
 spark = [
-  "py4j==0.10.9.7",
-  "pyspark==3.5.1",
+  "pyspark>=3.5,<4.0",
 ]
+
 dev = [
-  "handuflow[spark]",
-  "iniconfig==2.3.0",
-  "pluggy==1.6.0",
-  "Pygments==2.20.0",
-  "pytest==9.0.3",
+  "pyspark>=3.5,<4.0",
+  "pytest>=8,<10",
 ]
 
 [project.urls]
@@ -76,10 +63,10 @@ Changelog = "https://github.com/hhandoo/handuflow-core/blob/main/CHANGELOG.md"
 Issues = "https://github.com/hhandoo/handuflow-core/issues"
 
 [tool.pytest.ini_options]
+testpaths = ["tests/regression"]
 markers = [
     "integration: tests requiring Spark + Java",
 ]
-testpaths = ["tests/regression"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

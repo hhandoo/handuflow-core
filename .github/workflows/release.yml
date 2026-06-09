@@ -1,6 +1,13 @@
 name: Release
 
+# main is never pushed to directly — it is updated by merging PRs from dev.
+# PyPI publish runs when a release PR (version + CHANGELOG) is merged into main.
 on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
   push:
     tags:
       - "v*.*.*"
@@ -16,15 +23,34 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
+    name: Publish to PyPI
     runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      startsWith(github.ref, 'refs/tags/') ||
+      github.event_name == 'workflow_dispatch'
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.ref }}
+
+      - name: Verify release commit is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "Release tags must point to a commit on main."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,8 +64,24 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Package version: $VERSION"
 
+      - name: Extract changelog for this release
+        id: changelog
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          awk "/## \\[$VERSION\\]/{flag=1;next}/## \\[/{flag=0}flag" CHANGELOG.md > release_notes.md
+          if [ -s release_notes.md ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "No CHANGELOG section for [$VERSION]"
+          fi
+
+      - name: Skip — not a release merge
+        if: github.event_name == 'pull_request' && steps.changelog.outputs.ready != 'true'
+        run: echo "Merged PR is not a release (no CHANGELOG section for this version). Skipping PyPI."
+
       - name: Validate tag matches pyproject version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.changelog.outputs.ready == 'true'
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           EXPECTED="v${{ steps.version.outputs.version }}"
@@ -48,39 +90,26 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure tag does not already exist (manual runs)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true'
-        run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists"
-            exit 1
-          fi
+      - name: Fail — missing changelog (tag or manual release)
+        if: github.event_name != 'pull_request' && steps.changelog.outputs.ready != 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true')
+        run: exit 1
 
       - name: Install build tools
+        if: steps.changelog.outputs.ready == 'true' || github.event.inputs.dry_run == 'true'
         run: python -m pip install --upgrade pip build
 
       - name: Build package
+        if: steps.changelog.outputs.ready == 'true' || github.event.inputs.dry_run == 'true'
         run: python -m build
 
       - name: Publish to PyPI
-        if: github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true'
+        if: steps.changelog.outputs.ready == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Extract changelog for this release
-        if: github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true'
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          awk "/## \\[$VERSION\\]/{flag=1;next}/## \\[/{flag=0}flag" CHANGELOG.md > release_notes.md
-          if [ ! -s release_notes.md ]; then
-            echo "No CHANGELOG section for [$VERSION]" >&2
-            exit 1
-          fi
-
       - name: Create GitHub Release
-        if: github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true'
+        if: steps.changelog.outputs.ready == 'true' && (github.event_name != 'workflow_dispatch' || github.event.inputs.dry_run != 'true')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}

@@ -1,0 +1,15 @@
+# HanduFlow release control file.
+# Set the next version and release notes, then run: python scripts/release.py prepare
+
+version = "0.0.2"
+
+notes = """
+### Added
+-
+
+### Changed
+-
+
+### Fixed
+-
+"""

@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "handuflow"
+version = "0.0.1"
+description = "Spark + Delta Lake orchestration for medallion pipelines: CDC, SCD Type 2, data quality, lineage, and Excel reporting"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+
+authors = [
+  { name = "Harsh Handoo", email = "handoo.harsh@gmail.com" }
+]
+
+keywords = [
+  "spark",
+  "delta-lake",
+  "etl",
+  "data-quality",
+  "medallion",
+  "databricks",
+  "unity-catalog",
+]
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+
+dependencies = [
+  "delta-spark>=3.1,<4.0",
+  "openpyxl>=3.1,<4.0",
+  "pandas>=2.2,<3.0",
+  "matplotlib>=3.8,<4.0",
+  "requests>=2.32,<3.0",
+]
+
+[project.optional-dependencies]
+spark = [
+  "pyspark>=3.5,<4.0",
+]
+
+dev = [
+  "pyspark>=3.5,<4.0",
+  "pytest>=8,<10",
+]
+
+[project.urls]
+Homepage = "https://github.com/hhandoo/handuflow-core"
+Repository = "https://github.com/hhandoo/handuflow-core"
+Documentation = "https://github.com/hhandoo/handuflow-core/blob/main/documentation/RUN.md"
+Changelog = "https://github.com/hhandoo/handuflow-core/blob/main/CHANGELOG.md"
+Issues = "https://github.com/hhandoo/handuflow-core/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/regression"]
+markers = [
+    "integration: tests requiring Spark + Java",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+handuflow = ["py.typed"]

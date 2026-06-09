@@ -2,18 +2,23 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   test:
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version:
+          - "3.11"
+          - "3.12"
 
     steps:
       - name: Checkout
@@ -33,6 +38,7 @@ jobs:
       - name: Show versions
         run: |
           python --version
+          pip --version
           java --version
 
       - name: Install package
@@ -61,6 +67,7 @@ jobs:
           pytest tests/regression -m integration -q --tb=short
 
   version-check:
+    name: Version Check
     runs-on: ubuntu-latest
 
     steps:
@@ -78,20 +85,21 @@ jobs:
           set -euo pipefail
 
           PYPROJECT=$(python -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              print(tomllib.load(f)['project']['version'])
-          ")
+import tomllib
+
+with open('pyproject.toml', 'rb') as f:
+    print(tomllib.load(f)['project']['version'])
+")
 
           PACKAGE=$(python -c "
-          import pathlib, re
-          text = pathlib.Path('src/handuflow/_version.py').read_text()
-          m = re.search(r'__version__\s*=\s*[\"\\'\\'']([^\"\\'\\'']+)[\"\\'\\'']', text)
-          if not m:
-              raise SystemExit('Could not find __version__ in _version.py')
-          print(m.group(1))
-          ")
+ns = {}
 
-          test \"$PYPROJECT\" = \"$PACKAGE\"
+with open('src/handuflow/_version.py', encoding='utf-8') as f:
+    exec(f.read(), ns)
 
-          echo \"Version OK: $PYPROJECT\"
+print(ns['__version__'])
+")
+
+          test "$PYPROJECT" = "$PACKAGE"
+
+          echo "Version OK: $PYPROJECT"

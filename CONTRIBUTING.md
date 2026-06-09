@@ -73,7 +73,7 @@ python -m tests.e2e.run_e2e --smoke
 
 - **Single source of truth:** `pyproject.toml` → `[project].version` (current published version)
 - **Next release:** edit [`RELEASE.toml`](../RELEASE.toml), then `python scripts/release.py prepare`
-- **Branch flow:** push only to **`dev`** (no CI) → PR **`dev` → `main`** → merge triggers **one** Main run (test → deploy) — see [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md)
+- **Branch flow:** push only to **`dev`** → PR **`dev` → `main`** → merge triggers **one** deploy run — see [documentation/DEPLOYMENT.md](documentation/DEPLOYMENT.md)
 
 ## Pull requests
 
@@ -82,7 +82,7 @@ python -m tests.e2e.run_e2e --smoke
 2. One logical change per PR.
 3. Update README if you add config keys or public API.
 4. Add a CHANGELOG entry under `[Unreleased]` when behavior changes (or use `RELEASE.toml` for release notes).
-5. Ensure CI passes (tests, version check, package build).
+5. For releases, ensure `RELEASE.toml` / `CHANGELOG.md` are prepared before merging.
 6. Ensure `Orchestrator.run()` still finalizes logs in `finally`.
 
 ## Public API

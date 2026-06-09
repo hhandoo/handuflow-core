@@ -80,14 +80,14 @@ Dependency pins are defined only in **`pyproject.toml`**. The `requirements*.txt
 ```text
 dev  ──push──►  (no GitHub Actions)
   │
-  └── PR dev → main  ──merge──►  one Main run: test → build → deploy
+  └── PR dev → main  ──merge──►  one Main run: build → deploy
 ```
 
 | Event | What runs |
 |-------|-----------|
 | Push to **`dev`** | Nothing |
-| PR **`dev` → `main`** (open / update) | Nothing — run tests locally before merging |
-| PR **`dev` → `main`** **merged** | **One** [Main](../.github/workflows/main.yml) run: test → build → deploy |
+| PR **`dev` → `main`** (open / update) | Nothing |
+| PR **`dev` → `main`** **merged** | **One** [Main](../.github/workflows/main.yml) run: build → deploy to PyPI |
 
 **GitHub branch protection (recommended):** require PR reviews + status checks on **`main`**; disallow direct pushes to **`main`**.
 
@@ -136,22 +136,16 @@ git commit -m "Release 0.0.2"
 git push origin dev
 ```
 
-Open a pull request **`dev` → `main`**, merge when ready. **One** [Main](../.github/workflows/main.yml) workflow run starts on merge: test → build → deploy.
+Open a pull request **`dev` → `main`**, merge when ready. **One** [Main](../.github/workflows/main.yml) workflow run starts on merge: build → deploy to PyPI.
 
-Run tests locally before merging: `pytest tests/regression -v`
-
-### 4. Automated test and deploy
+### 4. Automated deploy
 
 [`.github/workflows/main.yml`](../.github/workflows/main.yml) runs **once**, only when a PR **`dev` → `main`** is **merged**:
 
-1. Test (Python 3.11 / 3.12 + Spark integration)
-2. Version check
-3. Package build
-4. Deploy to PyPI + GitHub Release (if `CHANGELOG.md` has a section for `pyproject.toml` version)
+1. Build wheel + sdist (`python -m build`)
+2. Publish to PyPI + GitHub Release (if `CHANGELOG.md` has a section for `pyproject.toml` version)
 
-If tests fail after merge, deploy does not run (`deploy` needs `build` needs `test`).
-
-Requires branch protection so merge is blocked until PR tests pass.
+Non-release merges (no changelog section) skip PyPI; the job completes without publishing.
 
 **PyPI setup:** add repository secret `PYPI_API_TOKEN` (PyPI → Account settings → API tokens).
 

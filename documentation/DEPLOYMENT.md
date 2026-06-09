@@ -78,22 +78,20 @@ Dependency pins are defined only in **`pyproject.toml`**. The `requirements*.txt
 **Never push to `main`.** All commits go to **`dev`**; **`main`** is updated only by merging pull requests from **`dev`**.
 
 ```text
-dev  ──push──►  (no CI)
+dev  ──push──►  (no GitHub Actions)
   │
-  └── PR ──►  main  ──CI──►  merge ──►  PyPI + GitHub Release (if release PR)
+  └── PR dev → main  ──►  test → merge →  deploy (PyPI, if release PR)
 ```
 
-| Branch / event | Workflow | What runs |
-|----------------|----------|-----------|
-| Push to **`dev`** | — | No CI (local dev only) |
-| PR **`dev` → `main`** | [CI](../.github/workflows/ci.yml) | Tests, version check, package build — must pass before merge |
-| Push to **`main`** (merge) | [CI](../.github/workflows/ci.yml) | Same checks on merged code |
-| PR **`dev` → `main`** merged (release) | [Release](../.github/workflows/release.yml) | Build → PyPI → GitHub Release + tag |
-| Tag **`v*.*.*`** on a **`main`** commit (optional) | [Release](../.github/workflows/release.yml) | Same publish flow |
+| Event | What runs |
+|-------|-----------|
+| Push to **`dev`** | Nothing |
+| PR **`dev` → `main`** (open / update) | **Test** → version check → build |
+| PR **`dev` → `main`** **merged** | **Test** → build → **Deploy** to PyPI (if `CHANGELOG.md` has release notes) |
 
-Develop on **`dev`** (push freely; no CI). Open a pull request into **`main`** — CI runs on the PR and must pass before merge. If the merged PR includes a version bump and `CHANGELOG.md` section (from `release.py prepare`), PyPI publish runs automatically.
+Push to **`dev`** freely with no CI. Open a PR into **`main`** — tests run on every push to the PR. When you merge, tests run again and deploy follows automatically for release PRs.
 
-**GitHub branch protection (recommended):** require PR reviews + CI checks on **`main`**; disallow direct pushes to **`main`**.
+**GitHub branch protection (recommended):** require PR reviews + status checks on **`main`**; disallow direct pushes to **`main`**.
 
 ---
 
@@ -140,35 +138,23 @@ git commit -m "Release 0.0.2"
 git push origin dev
 ```
 
-Open a pull request **`dev` → `main`**. When CI passes, merge the PR. The [Release](../.github/workflows/release.yml) workflow publishes to PyPI automatically if `CHANGELOG.md` contains a section for the new version.
+Open a pull request **`dev` → `main`**. When tests pass, merge the PR. The [Main](../.github/workflows/main.yml) workflow runs **test** on the PR, then **deploy** when merged.
 
-### 4. Automated publish
+### 4. Automated test and deploy
 
-Merging a release PR into **`main`** triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+[`.github/workflows/main.yml`](../.github/workflows/main.yml) (`Main`) runs **only** on pull requests **`dev` → `main`**:
 
-1. Validates `CHANGELOG.md` has a section for `pyproject.toml` version
-2. Builds wheel + sdist (`python -m build`)
-3. Publishes to PyPI via [`pypa/gh-action-pypi-publish`](https://github.com/pypa/gh-action-pypi-publish) (`PYPI_API_TOKEN` secret)
-4. Creates GitHub Release (tag `vX.Y.Z`) with changelog notes
+**While PR is open (each push to `dev`):**
+1. Test (Python 3.11 / 3.12 + Spark integration)
+2. Version check
+3. Package build
 
-Non-release merges (no new changelog section) skip PyPI publish. Optional: push tag `v*.*.*` on a **`main`** commit to re-run publish manually.
+**When PR is merged into `main`:**
+1. Deploy to PyPI + GitHub Release (if `CHANGELOG.md` has a section for `pyproject.toml` version)
 
-Manual dry-run (build only, no upload):
+Requires branch protection so merge is blocked until PR tests pass.
 
-```bash
-# GitHub Actions → Release → Run workflow → dry_run: true
-```
-
-**PyPI setup:** add repository secret `PYPI_API_TOKEN` (PyPI → Account settings → API tokens). Optional: configure [trusted publishing](https://docs.pypi.org/trusted-publishers/) for the `pypi` environment instead of a token.
-
-### CI (main only)
-
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pull requests into **`main`** and on pushes to **`main`** (after merge). Pushes to **`dev`** do not trigger CI.
-
-- Config + unit tests (no Spark)
-- Integration tests (`pytest -m integration`)
-- Version consistency check (`pyproject.toml` == `handuflow._version`)
-- Package build (`python -m build`, artifact uploaded — not published)
+**PyPI setup:** add repository secret `PYPI_API_TOKEN` (PyPI → Account settings → API tokens).
 
 ---
 

@@ -123,17 +123,23 @@ class BaseLoadStrategy(ABC):
         """True when target Delta partitions differ from feed (including removal)."""
         return self._delta_partition_columns_mismatch(table_name)
 
+    def _resolve_table_storage_path(self, table_name: str) -> Path:
+        """Hive-style warehouse path for a catalog table name (db.table)."""
+        db_name, short_name = table_name.split(".", 1)
+        warehouse = self.spark.conf.get("spark.sql.warehouse.dir", "spark-warehouse")
+        warehouse_path = Path(urlparse(str(warehouse)).path or warehouse).resolve()
+        return warehouse_path / f"{db_name}.db" / short_name
+
     def _purge_delta_table(self, table_name: str) -> None:
         """Drop catalog entry and remove on-disk Delta files (avoids corrupt layouts)."""
-        if not self.spark.catalog.tableExists(table_name):
-            return
         location: str | None = None
-        try:
-            rows = self.spark.sql(f"DESCRIBE DETAIL {table_name}").collect()
-            if rows:
-                location = rows[0]["location"]
-        except Exception:
-            location = None
+        if self.spark.catalog.tableExists(table_name):
+            try:
+                rows = self.spark.sql(f"DESCRIBE DETAIL {table_name}").collect()
+                if rows:
+                    location = rows[0]["location"]
+            except Exception:
+                location = None
         self.logger.info("Dropping table %s", table_name)
         self.spark.catalog.clearCache()
         self.spark.sql(f"DROP TABLE IF EXISTS {table_name}")
@@ -141,6 +147,14 @@ class BaseLoadStrategy(ABC):
             path = Path(urlparse(str(location)).path)
             if path.exists():
                 shutil.rmtree(path, ignore_errors=True)
+        elif "." in table_name:
+            db_name, short_name = table_name.split(".", 1)
+            warehouse = Path(
+                self.spark.conf.get("spark.sql.warehouse.dir", "spark-warehouse")
+            ).resolve()
+            table_dir = warehouse / f"{db_name}.db" / short_name
+            if table_dir.exists():
+                shutil.rmtree(table_dir, ignore_errors=True)
 
     def _drop_table_if_exists(self, table_name: str) -> None:
         self._purge_delta_table(table_name)
@@ -214,6 +228,37 @@ class BaseLoadStrategy(ABC):
         for name in table_names:
             self._purge_delta_table(name)
 
+    def _overwrite_delta_table(
+        self,
+        df: DataFrame,
+        table_name: str,
+        *,
+        overwrite_schema: bool = False,
+        extra_options: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Drop + path overwrite + CREATE TABLE.
+
+        Avoids Spark V2 saveAsTable(overwrite) truncate-in-batch-mode failures
+        on local Hive/Delta catalogs.
+        """
+        keys = self._partition_keys()
+        self._drop_table_if_exists(table_name)
+        table_path = self._resolve_table_storage_path(table_name)
+        table_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = df.write.format("delta").mode("overwrite")
+        if overwrite_schema:
+            writer = writer.option("overwriteSchema", "true")
+        for key, value in (extra_options or {}).items():
+            writer = writer.option(key, value)
+        if keys:
+            writer = writer.partitionBy(*keys)
+        writer.save(str(table_path))
+        location = table_path.resolve().as_uri()
+        self.spark.sql(
+            f"CREATE TABLE {table_name} USING DELTA LOCATION '{location}'"
+        )
+
     def _write_staging_delta(
         self, df: DataFrame, table_name: str, mode: str
     ) -> None:
@@ -223,14 +268,18 @@ class BaseLoadStrategy(ABC):
         if keys:
             df = self._prepare_partition_columns(df)
             self._validate_partition_columns_not_null(df)
-        if mismatch and mode == "overwrite":
+        if mode == "overwrite":
             self.logger.info(
-                "Staging partition scheme changed for %s (feed keys=%s); "
-                "dropping table before overwrite",
+                "Recreating staging table %s (drop + path write; feed keys=%s)",
                 table_name,
                 keys,
             )
-            self._drop_staging_tables(table_name)
+            self._overwrite_delta_table(
+                df,
+                table_name,
+                overwrite_schema=mismatch,
+            )
+            return
         writer = df.write.format("delta").mode(mode)
         if mismatch:
             writer = writer.option("overwriteSchema", "true")
@@ -266,11 +315,29 @@ class BaseLoadStrategy(ABC):
                 table_name,
                 keys,
             )
-            self._drop_table_if_exists(table_name)
             overwrite_schema = True
         if keys:
             df = self._prepare_partition_columns(df)
             self._validate_partition_columns_not_null(df)
+        if mode == "overwrite":
+            if keys:
+                self.logger.info(
+                    "Writing %s with partitionBy(%s)", table_name, keys
+                )
+            else:
+                self.logger.info("Writing %s without partitioning", table_name)
+            self._overwrite_delta_table(
+                df,
+                table_name,
+                overwrite_schema=overwrite_schema or partition_mismatch,
+                extra_options={
+                    "delta.autoOptimize.autoCompact": "false",
+                    "delta.autoOptimize.optimizeWrite": "false",
+                }
+                if overwrite_schema
+                else None,
+            )
+            return
         writer = df.write.format("delta").mode(mode)
         if overwrite_schema:
             writer = (

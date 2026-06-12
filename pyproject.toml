@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "handuflow"
-version = "0.0.4"
+version = "0.0.5"
 description = "Spark + Delta Lake orchestration for medallion pipelines: CDC, SCD Type 2, data quality, lineage, and Excel reporting"
 readme = "README.md"
 requires-python = ">=3.11"

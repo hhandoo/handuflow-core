@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ---
 
 ## [Unreleased]
+## [0.0.5] - 2026-06-12
+
+### Added
+- `RELEASE.toml` release control file and `scripts/release.py` to prepare versions and changelog from a single source.
+- Single GitHub Actions **Main** workflow: deploy to PyPI when a PR `dev` → `main` is merged (no CI on `dev` pushes).
+### Changed
+- Staging and target Delta **overwrite** now uses drop → path write → `CREATE TABLE` instead of `saveAsTable(overwrite)`, avoiding Spark V2 truncate-in-batch-mode failures on local Hive/Delta catalogs.
+- `_purge_delta_table` always runs `DROP TABLE IF EXISTS` and cleans warehouse paths even when `tableExists` is false.
+### Fixed
+- **HF039 / HF044** on `FULL_LOAD` (and other overwrite loads): `Table does not support truncate in batch mode` when writing `staging.t_full_*` or silver/gold targets.
+- GitHub Actions no longer runs duplicate workflows (separate CI + Release on PR open/close); one deploy run per merged release PR.
+
 ## [0.0.4] - 2026-06-09
 
 ### Added

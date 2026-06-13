@@ -1,9 +1,12 @@
 # inbuilt
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from handuflow.data_movement_controller.data_class.load_result import LoadResult
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 class RunStatus(str, Enum):
@@ -32,6 +35,7 @@ class RunResult:
     phase_errors: list[dict[str, Any]] = field(default_factory=list)
     archived_log_path: str | None = None
     message: str = ""
+    master_specs: "pd.DataFrame | None" = None
 
     @property
     def succeeded(self) -> bool:

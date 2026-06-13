@@ -121,3 +121,18 @@ def test_global_vacuum_hours_boundary_values():
         cfg = _minimal_config(global_vacuum_hours=value)
         validate_handuflow_config(cfg, check_paths_exist=False)
         assert global_vacuum_hours(cfg) == int(value)
+
+
+def test_is_auto_vacuum_enabled_defaults_true():
+    from handuflow.config.config_paths import is_auto_vacuum_enabled
+
+    cfg = _minimal_config()
+    assert is_auto_vacuum_enabled(cfg) is True
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False), ("0", False)])
+def test_is_auto_vacuum_enabled_parses_bool(value: str, expected: bool):
+    from handuflow.config.config_paths import is_auto_vacuum_enabled
+
+    cfg = _minimal_config(is_auto_vacuum_enabled=value)
+    assert is_auto_vacuum_enabled(cfg) is expected

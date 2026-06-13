@@ -1,12 +1,12 @@
 # Feed specs (`feed_specs` JSON)
 
-Stored as a JSON string in the master spec `feed_specs` column. Two shapes: **medallion** (downstream loads) and **bronze** (`SOURCE_TO_BRONZE`).
+Stored as a JSON string in the master spec `feed_specs` column. Two shapes: **within-catalog loads** (`WITHIN_UNITY_CATALOG`) and **ingestion** (`INGESTION`).
 
 ---
 
-## Medallion feeds (required top-level keys)
+## Within-catalog feeds (required top-level keys)
 
-Startup validation requires **all** keys below for `data_flow_direction != SOURCE_TO_BRONZE` (optional keys may also be present):
+Startup validation requires **all** keys below for `data_flow_direction = WITHIN_UNITY_CATALOG` (optional keys may also be present):
 
 ```json
 {
@@ -47,7 +47,7 @@ Example: `documentation/examples/medallion/country_codes.json`.
 
 ---
 
-## Bronze feeds (`SOURCE_TO_BRONZE`)
+## Ingestion feeds (`INGESTION`)
 
 Not subject to the medallion key-set rule. Typical keys:
 

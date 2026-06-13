@@ -6,6 +6,7 @@ import json
 import pandas as pd
 
 # internal
+from handuflow.constants import ALLOWED_DATA_FLOW_DIRECTIONS, WITHIN_UNITY_CATALOG
 from handuflow.validation.validation_rule import ValidationRule
 from handuflow.validation.validation_context import ValidationContext
 
@@ -122,10 +123,27 @@ class EnforceMasterSpecsStructure(ValidationRule):
                 message=message,
                 original_exception=None            
             )
+        invalid_directions = context.master_specs_dataframe[
+            ~context.master_specs_dataframe["data_flow_direction"].isin(
+                ALLOWED_DATA_FLOW_DIRECTIONS
+            )
+        ]
+        if not invalid_directions.empty:
+            values = sorted(
+                invalid_directions["data_flow_direction"].astype(str).unique().tolist()
+            )
+            self.fail(
+                message=(
+                    "Validation failed: data_flow_direction must be one of "
+                    f"{sorted(ALLOWED_DATA_FLOW_DIRECTIONS)}; found {values}"
+                ),
+                original_exception=None,
+            )
         else:
 
             filtered_df = context.master_specs_dataframe[
-                context.master_specs_dataframe['data_flow_direction'] != 'SOURCE_TO_BRONZE'
+                context.master_specs_dataframe["data_flow_direction"]
+                == WITHIN_UNITY_CATALOG
             ]
 
             all_feed_specs = filtered_df['feed_specs'].to_list()

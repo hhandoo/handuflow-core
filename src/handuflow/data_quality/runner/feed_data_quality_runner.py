@@ -226,10 +226,13 @@ class FeedDataQualityRunner:
             result["comprehensive_pre_load_passed"] = None
 
         result["can_ingest"] = self._can_ingest(result)
+        result["ingest_block_reason"] = self.ingest_block_reason(result)
         if not result["can_ingest"]:
             self.logger.warning(
-                "feed_id=%s blocked from ingest | standard_passed=%s pre_load_passed=%s",
+                "feed_id=%s blocked from ingest | reason=%s | standard_passed=%s "
+                "pre_load_passed=%s",
                 feed_id,
+                result["ingest_block_reason"],
                 result.get("standard_checks_passed"),
                 result.get("comprehensive_pre_load_passed"),
             )
@@ -281,16 +284,30 @@ class FeedDataQualityRunner:
         }
 
     @staticmethod
+    def ingest_block_reason(result: dict) -> str | None:
+        """
+        Return a reason code when the feed must not load, else None.
+
+        Configured standard or PRE_LOAD comprehensive checks must explicitly pass
+        (``True``); ``False`` or ``None`` blocks ingest.
+        """
+        if result.get("dq_error"):
+            return "pre_load_dq_error"
+        if result.get("standard_checks_configured"):
+            if result.get("standard_checks_passed") is False:
+                return "standard_checks_failed"
+            if result.get("standard_checks_passed") is not True:
+                return "standard_checks_not_passed"
+        if result.get("comprehensive_pre_load_configured"):
+            if result.get("comprehensive_pre_load_passed") is False:
+                return "pre_load_comprehensive_checks_failed"
+            if result.get("comprehensive_pre_load_passed") is not True:
+                return "pre_load_comprehensive_checks_not_passed"
+        return None
+
+    @staticmethod
     def _can_ingest(result: dict) -> bool:
-        if result.get("standard_checks_configured") and not result.get(
-            "standard_checks_passed"
-        ):
-            return False
-        if result.get("comprehensive_pre_load_configured") and result.get(
-            "comprehensive_pre_load_passed"
-        ) is False:
-            return False
-        return True
+        return FeedDataQualityRunner.ingest_block_reason(result) is None
 
     @staticmethod
     def _comprehensive_checks_for_stage(feed: dict, stage: str) -> list[dict]:
@@ -357,8 +374,17 @@ class FeedDataQualityRunner:
             "feed_name",
             "feed_type",
             "load_type",
+            "target_schema_name",
             "target_table_name",
+            "source_table_name",
         ):
+            if col == "source_table_name":
+                try:
+                    feed_specs = json.loads(feed_row.get("feed_specs", "{}"))
+                except json.JSONDecodeError:
+                    feed_specs = {}
+                result[col] = (feed_specs.get("source_table_name") or "").strip()
+                continue
             result[col] = feed_row.get(col)
         return result
 
@@ -387,6 +413,7 @@ class FeedDataQualityRunner:
             "comprehensive_post_load_passed": None,
             "comprehensive_results": [],
             "can_ingest": False,
+            "ingest_block_reason": "pre_load_dq_error",
             "dq_error": record.get("message") or str(error),
             "dq_error_code": record.get("error_code"),
             "dq_traceback": record.get("traceback") or traceback.format_exc(),

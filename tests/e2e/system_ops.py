@@ -264,10 +264,10 @@ def run_restore_cycle(
 
     for i in range(restore_point_count):
         rp_id = create_restore_point(
-            spark, ops_cfg, master_df, created_by=f"qaft_e2e_{feed_id}"
+            spark, ops_cfg, created_by=f"qaft_e2e_{feed_id}"
         )
         restore_ids.append(rp_id)
-        details = get_restore_point_details(spark, ops_cfg, master_df, rp_id)
+        details = get_restore_point_details(spark, ops_cfg, rp_id)
         if not details.get("is_valid"):
             return {
                 "passed": False,
@@ -287,7 +287,6 @@ def run_restore_cycle(
     request_id = initiate_restore(
         spark,
         ops_cfg,
-        master_df,
         target_rp,
         requested_by=f"qaft_e2e_{feed_id}",
     )
@@ -299,7 +298,7 @@ def run_restore_cycle(
         }
 
     ok, msg = validate_target_matches_snapshot(spark, target_fqn, target_snap)
-    listed = list_restore_points(spark, ops_cfg, master_df)
+    listed = list_restore_points(spark, ops_cfg)
 
     for snap in snapshots:
         spark.sql(f"DROP TABLE IF EXISTS {snap}")

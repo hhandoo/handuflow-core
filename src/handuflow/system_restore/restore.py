@@ -1,5 +1,5 @@
 """
-System Restore — Delta Lake version-based global restore points.
+System Restore — Delta Lake version-based global restore points for Unity Catalog tables.
 
 Metadata tables (under ``[DEFAULT] system_schema``):
 
@@ -29,6 +29,7 @@ import pandas as pd
 import pyspark.sql.functions as F
 from delta.tables import DeltaTable
 from pyspark.sql.types import (
+    BooleanType,
     IntegerType,
     LongType,
     StringType,
@@ -41,10 +42,16 @@ from handuflow.config.catalog_resolver import CatalogResolver
 from handuflow.config.config_paths import global_vacuum_hours, runtime_mode, system_schema
 from handuflow.config.run_logger import log_step
 from handuflow.exception.system_error import SystemError
-from handuflow.system_shared.delta_utils import is_delta_table, quote_table
+from handuflow.system_shared.delta_utils import (
+    append_delta_table,
+    is_delta_table,
+    overwrite_delta_table,
+    quote_table,
+)
 from handuflow.system_shared.spec_tables import (
-    collect_master_spec_table_entries,
-    expected_table_set,
+    collect_restore_point_table_entries,
+    expected_restore_table_set,
+    load_master_specs_from_config,
     master_specs_to_dataframe,
 )
 
@@ -97,8 +104,11 @@ class SystemRestore:
         self._ensure_metadata_tables()
 
     def create_restore_point(self, created_by: str) -> str:
-        """Capture current Delta versions for all master-spec tables."""
-        restore_point_id = self._next_restore_point_id()
+        """Capture Delta versions for target and staging tables."""
+        return self._capture_restore_point(created_by, allow_reuse=True)
+
+    def _capture_restore_point(self, created_by: str, *, allow_reuse: bool) -> str:
+        """Persist table versions as a restore point; optionally reuse when unchanged."""
         entries = self._delta_table_entries_for_snapshot()
         if not entries:
             raise SystemError(
@@ -107,7 +117,31 @@ class SystemRestore:
             )
         self._validate_complete_table_set({e["table_name"] for e in entries})
 
+        current_versions = {
+            e["table_name"]: int(e["delta_version"]) for e in entries
+        }
+        if allow_reuse:
+            existing_id = self._find_reusable_restore_point(current_versions)
+            if existing_id is not None:
+                self._mark_restore_point_as_latest(existing_id)
+                log_step(
+                    self.logger,
+                    "system_restore.create",
+                    status="SKIP",
+                    restore_point_id=existing_id,
+                    reason="delta_versions_unchanged",
+                    table_count=len(entries),
+                )
+                self.logger.info(
+                    "Restore point unchanged; reusing %s "
+                    "(target/staging delta versions match current state).",
+                    existing_id,
+                )
+                return existing_id
+
+        restore_point_id = self._next_restore_point_id()
         now = _utc_now()
+        self._clear_latest_restore_point_flags()
         rows = [
             {
                 "restore_point_id": restore_point_id,
@@ -117,6 +151,7 @@ class SystemRestore:
                 "created_timestamp": now,
                 "created_by": created_by,
                 "vacuum_retention_hours": self.vacuum_hours,
+                "is_latest": True,
             }
             for e in entries
         ]
@@ -134,11 +169,12 @@ class SystemRestore:
         for row in rows:
             self.logger.info(
                 "Restore point version captured | restore_point_id=%s | table=%s | "
-                "table_type=%s | delta_version=%s",
+                "table_type=%s | delta_version=%s | is_latest=%s",
                 restore_point_id,
                 row["table_name"],
                 row["table_type"],
                 row["delta_version"],
+                row["is_latest"],
             )
         return restore_point_id
 
@@ -165,14 +201,16 @@ class SystemRestore:
                 message=f"Restore point not found: {restore_point_id}",
                 error_code="HF097",
             )
-        expected = expected_table_set(self.master_specs, self.config)
+        expected = expected_restore_table_set(self.master_specs, self.config)
         tables_in_point = {r["table_name"] for r in rows}
         validation_errors = self._validate_restore_point_rows(rows, expected)
         return {
             "restore_point_id": restore_point_id,
             "table_count": len(rows),
             "tables": rows,
+            "is_latest": bool(rows[0].get("is_latest")),
             "expected_table_count": len(expected),
+            "includes_all_targets": expected <= tables_in_point,
             "includes_all_tables": expected <= tables_in_point,
             "within_retention": not any(
                 "retention window expired" in e for e in validation_errors
@@ -208,7 +246,7 @@ class SystemRestore:
         )
 
         rows = self._load_restore_point_rows(restore_point_id)
-        expected = expected_table_set(self.master_specs, self.config)
+        expected = expected_restore_table_set(self.master_specs, self.config)
         validation_errors = self._validate_restore_point_rows(rows, expected)
         if validation_errors:
             msg = "; ".join(validation_errors)
@@ -222,6 +260,16 @@ class SystemRestore:
                 message=f"Restore point validation failed: {msg}",
                 error_code="HF097",
             )
+
+        pre_restore_id = self._capture_restore_point(
+            requested_by,
+            allow_reuse=False,
+        )
+        self.logger.info(
+            "Pre-restore snapshot captured | request_id=%s | restore_point_id=%s",
+            request_id,
+            pre_restore_id,
+        )
 
         start = _utc_now()
         self._update_audit(
@@ -266,9 +314,57 @@ class SystemRestore:
             status="OK",
             request_id=request_id,
             restore_point_id=restore_point_id,
+            pre_restore_point_id=pre_restore_id,
             table_count=len(rows),
         )
         return request_id
+
+    def get_latest_restore_point_id(self) -> str | None:
+        """Return the restore point ID marked ``is_latest``, if any."""
+        if not self.spark.catalog.tableExists(self.restore_points_table):
+            return None
+        if "is_latest" not in {
+            f.name for f in self.spark.table(self.restore_points_table).schema.fields
+        }:
+            ids = self._list_restore_point_ids_newest_first()
+            return ids[0] if ids else None
+        latest = (
+            self.spark.table(self.restore_points_table)
+            .filter(F.col("is_latest") == True)  # noqa: E712
+            .select("restore_point_id")
+            .distinct()
+            .collect()
+        )
+        if not latest:
+            return None
+        if len(latest) > 1:
+            self.logger.warning(
+                "Multiple restore points marked is_latest; using newest sequence."
+            )
+            return sorted(
+                [row["restore_point_id"] for row in latest],
+                key=self._restore_point_sequence,
+                reverse=True,
+            )[0]
+        return latest[0]["restore_point_id"]
+
+    def _mark_restore_point_as_latest(self, restore_point_id: str) -> None:
+        self._clear_latest_restore_point_flags()
+        quoted = quote_table(self.restore_points_table)
+        self.spark.sql(
+            f"UPDATE {quoted} SET is_latest = true "
+            f"WHERE restore_point_id = '{restore_point_id}'"
+        )
+
+    def _clear_latest_restore_point_flags(self) -> None:
+        if not self.spark.catalog.tableExists(self.restore_points_table):
+            return
+        if "is_latest" not in {
+            f.name for f in self.spark.table(self.restore_points_table).schema.fields
+        }:
+            return
+        quoted = quote_table(self.restore_points_table)
+        self.spark.sql(f"UPDATE {quoted} SET is_latest = false")
 
     def _restore_table_version(self, table_name: str, version: int) -> None:
         quoted = quote_table(table_name)
@@ -287,7 +383,7 @@ class SystemRestore:
     def _delta_table_entries_for_snapshot(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for table_name, table_type in collect_master_spec_table_entries(
+        for table_name, table_type in collect_restore_point_table_entries(
             self.master_specs, self.config
         ):
             key = (table_name, table_type)
@@ -329,6 +425,45 @@ class SystemRestore:
             return None
         return int(history[0]["version"])
 
+    def _restore_point_sequence(self, restore_point_id: str) -> int:
+        match = RESTORE_POINT_PATTERN.match(str(restore_point_id))
+        return int(match.group(1)) if match else 0
+
+    def _list_restore_point_ids_newest_first(self) -> list[str]:
+        if not self.spark.catalog.tableExists(self.restore_points_table):
+            return []
+        ids = [
+            row["restore_point_id"]
+            for row in self.spark.table(self.restore_points_table)
+            .select("restore_point_id")
+            .distinct()
+            .collect()
+        ]
+        return sorted(ids, key=self._restore_point_sequence, reverse=True)
+
+    def _find_reusable_restore_point(
+        self, current_versions: dict[str, int]
+    ) -> str | None:
+        """
+        Return the newest restore point whose table versions match ``current_versions``.
+
+        Skips creating duplicate restore points when loads were skipped and Delta
+        table versions did not change.
+        """
+        for restore_point_id in self._list_restore_point_ids_newest_first():
+            rows = self._load_restore_point_rows(restore_point_id)
+            if not rows:
+                continue
+            point_versions = {
+                row["table_name"]: int(row["delta_version"]) for row in rows
+            }
+            if point_versions != current_versions:
+                continue
+            if not self._is_restore_point_valid(restore_point_id):
+                continue
+            return restore_point_id
+        return None
+
     def _is_restore_point_valid(self, restore_point_id: str) -> bool:
         try:
             details = self.get_restore_point_details(restore_point_id)
@@ -349,7 +484,7 @@ class SystemRestore:
         missing = expected_tables - tables_in_point
         if missing:
             errors.append(
-                f"restore point missing tables: {sorted(missing)}"
+                f"restore point missing target tables: {sorted(missing)}"
             )
 
         created = rows[0].get("created_timestamp")
@@ -393,12 +528,12 @@ class SystemRestore:
         return created < cutoff
 
     def _validate_complete_table_set(self, captured: set[str]) -> None:
-        expected = expected_table_set(self.master_specs, self.config)
+        expected = expected_restore_table_set(self.master_specs, self.config)
         missing = expected - captured
         if missing:
             raise SystemError(
                 message=(
-                    "Restore point incomplete; missing Delta tables: "
+                    "Restore point incomplete; missing target Delta tables: "
                     f"{sorted(missing)}"
                 ),
                 error_code="HF097",
@@ -435,24 +570,47 @@ class SystemRestore:
             self.restore_points_table,
             _restore_points_schema(),
         )
+        self._ensure_restore_points_columns()
         self._ensure_table(
             self.restore_audit_table,
             _restore_audit_schema(),
         )
 
+    def _ensure_restore_points_columns(self) -> None:
+        if not self.spark.catalog.tableExists(self.restore_points_table):
+            return
+        columns = {
+            f.name for f in self.spark.table(self.restore_points_table).schema.fields
+        }
+        if "is_latest" in columns:
+            return
+        quoted = quote_table(self.restore_points_table)
+        self.spark.sql(f"ALTER TABLE {quoted} ADD COLUMNS (is_latest BOOLEAN)")
+        self.logger.info(
+            "Added is_latest column to %s; backfilling latest restore point.",
+            self.restore_points_table,
+        )
+        latest_id = self._list_restore_point_ids_newest_first()
+        if latest_id:
+            self._mark_restore_point_as_latest(latest_id[0])
+
     def _ensure_schema_exists(self) -> None:
-        parts = self.schema_name.split(".")
+        parts = [p.strip("`") for p in self.schema_name.split(".") if p.strip("`")]
         if len(parts) == 2:
             catalog, schema = parts
             self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`")
         else:
-            self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{self.schema_name}`")
+            self.spark.sql(f"CREATE DATABASE IF NOT EXISTS `{parts[0]}`")
 
     def _ensure_table(self, qualified_name: str, schema: StructType) -> None:
         if self.spark.catalog.tableExists(qualified_name):
-            return
+            if is_delta_table(self.spark, qualified_name):
+                return
+            self.logger.warning(
+                "Replacing non-Delta system metadata table: %s", qualified_name
+            )
         empty = self.spark.createDataFrame([], schema)
-        empty.write.format("delta").mode("overwrite").saveAsTable(qualified_name)
+        overwrite_delta_table(self.spark, qualified_name, empty)
         self.logger.info("Created system metadata table: %s", qualified_name)
 
     def _append_rows(
@@ -462,7 +620,7 @@ class SystemRestore:
         schema: StructType,
     ) -> None:
         df = self.spark.createDataFrame(rows, schema=schema)
-        df.write.format("delta").mode("append").saveAsTable(qualified_name)
+        append_delta_table(self.spark, qualified_name, df)
 
     def _insert_audit_row(self, row: dict[str, Any]) -> None:
         self._append_rows(self.restore_audit_table, [row], _restore_audit_schema())
@@ -519,6 +677,7 @@ def _restore_points_schema() -> StructType:
             StructField("created_timestamp", TimestampType(), False),
             StructField("created_by", StringType(), False),
             StructField("vacuum_retention_hours", IntegerType(), False),
+            StructField("is_latest", BooleanType(), False),
         ]
     )
 
@@ -541,11 +700,11 @@ def _restore_audit_schema() -> StructType:
 def _service(
     spark: SparkSession,
     config: configparser.ConfigParser,
-    master_specs: pd.DataFrame | list[dict],
     catalog_hint: str = "",
 ) -> SystemRestore:
-    hint = catalog_hint or _default_catalog_hint(master_specs)
-    return SystemRestore(spark, config, master_specs, catalog_hint=hint)
+    resolved = load_master_specs_from_config(config)
+    hint = catalog_hint or _default_catalog_hint(resolved)
+    return SystemRestore(spark, config, resolved, catalog_hint=hint)
 
 
 def _default_catalog_hint(master_specs: pd.DataFrame | list[dict]) -> str:
@@ -562,52 +721,61 @@ def _default_catalog_hint(master_specs: pd.DataFrame | list[dict]) -> str:
 def create_restore_point(
     spark: SparkSession,
     config: configparser.ConfigParser,
-    master_specs: pd.DataFrame | list[dict],
     created_by: str,
     *,
     catalog_hint: str = "",
 ) -> str:
-    """Create a new global restore point (HFRP####)."""
-    return _service(spark, config, master_specs, catalog_hint).create_restore_point(
-        created_by
-    )
+    """
+    Create a new global restore point (HFRP####).
+
+    Master specs are always loaded from ``config.ini`` (``file_hunt_path`` +
+    ``[FILES] master_spec_name``).
+    """
+    return _service(spark, config, catalog_hint).create_restore_point(created_by)
 
 
 def list_restore_points(
     spark: SparkSession,
     config: configparser.ConfigParser,
-    master_specs: pd.DataFrame | list[dict],
     *,
     catalog_hint: str = "",
 ) -> list[str]:
-    """List valid restore point IDs."""
-    return _service(spark, config, master_specs, catalog_hint).list_restore_points()
+    """List valid restore point IDs (master specs from ``config.ini``)."""
+    return _service(spark, config, catalog_hint).list_restore_points()
 
 
 def get_restore_point_details(
     spark: SparkSession,
     config: configparser.ConfigParser,
-    master_specs: pd.DataFrame | list[dict],
     restore_point_id: str,
     *,
     catalog_hint: str = "",
 ) -> dict[str, Any]:
     """Return restore point metadata and validation status."""
-    return _service(
-        spark, config, master_specs, catalog_hint
-    ).get_restore_point_details(restore_point_id)
+    return _service(spark, config, catalog_hint).get_restore_point_details(
+        restore_point_id
+    )
+
+
+def get_latest_restore_point_id(
+    spark: SparkSession,
+    config: configparser.ConfigParser,
+    *,
+    catalog_hint: str = "",
+) -> str | None:
+    """Return the restore point ID marked ``is_latest`` in ``SYSTEM_RESTORE_POINTS``."""
+    return _service(spark, config, catalog_hint).get_latest_restore_point_id()
 
 
 def initiate_restore(
     spark: SparkSession,
     config: configparser.ConfigParser,
-    master_specs: pd.DataFrame | list[dict],
     restore_point_id: str,
     requested_by: str,
     *,
     catalog_hint: str = "",
 ) -> str:
     """Execute a full system restore; returns audit ``request_id``."""
-    return _service(spark, config, master_specs, catalog_hint).initiate_restore(
+    return _service(spark, config, catalog_hint).initiate_restore(
         restore_point_id, requested_by
     )

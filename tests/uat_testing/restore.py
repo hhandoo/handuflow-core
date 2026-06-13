@@ -26,76 +26,35 @@ spark = (
 
 
 
-# cd ~/Documents/handuflow-core/tests/uat_testing
-# source .venvuat/bin/activate
-# pip install -e '/home/handu/Documents/handuflow-core/.[spark]'
-# python full_load_test.py
-
-spark.sql("CREATE DATABASE IF NOT EXISTS demo")
-spark.sql("CREATE DATABASE IF NOT EXISTS staging")
-spark.sql("CREATE DATABASE IF NOT EXISTS silver")
 
 
 
-# spark.sql("DROP TABLE IF EXISTS demo.test")
-# df = spark.range(1, 101).toDF("row_id")
-# df = (
-#     df.withColumn("alpha3_b", expr("concat('USA', cast(row_id as string))"))
-#     .withColumn("alpha3_t", expr("concat('US', cast(row_id as string))"))
-#     .withColumn("alpha2", expr("substring('US', 1, 2)"))
-#     .withColumn(
-#         "english",
-#         expr("""
-#             CASE
-#                 WHEN row_id % 4 = 0 THEN 'United States'
-#                 WHEN row_id % 4 = 1 THEN 'Germany'
-#                 WHEN row_id % 4 = 2 THEN 'India'
-#                 ELSE 'Canada'
-#             END
-#         """),
-#     )
-#     .drop("row_id")
-# )
-
-# df.write.format("delta").saveAsTable("demo.test")
-
-
-
-
-# # update operation
-
-# spark.sql("delete from demo.test where english = 'Germany';")
-
-
-#spark.sql("update demo.test set english = 'Updated_USA' where alpha3_b = 'USA1';")
-
-
-
-
-
-from handuflow import run, load_config, create_restore_point
+from handuflow import run, load_config, create_restore_point, list_restore_points, get_restore_point_details, initiate_restore
 
 cfg = load_config("/home/handu/Documents/handuflow-core/tests/uat_testing/handuflow_dir_full_load/config.ini")
 
-result = run(spark, config=cfg)
+# result = run(spark, config=cfg)
 
-print(result.status)        # COMPLETED, COMPLETED_WITH_ERRORS, etc.
-# print(result.load_results)  # per-feed outcomes
-# print(result.run_id)        # for logs/reports
-
-
-if result.succeeded:
-    rp_id = create_restore_point(
-        spark,
-        cfg,
-        created_by="uat_test",
-    )
-    print(rp_id)
+# print(result.status)        # COMPLETED, COMPLETED_WITH_ERRORS, etc.
+# # print(result.load_results)  # per-feed outcomes
+# # print(result.run_id)        # for logs/reports
 
 
+# if result.succeeded and result.master_specs is not None:
+#     rp_id = create_restore_point(
+#         spark,
+#         cfg,
+#         result.master_specs,   # same validated specs the run used
+#         created_by="uat_test",
+#     )
+#     print(rp_id)
 
 
 
+print(list_restore_points(spark, cfg))
+
+
+request_id = initiate_restore(spark, cfg, "HFRP0001", requested_by="uat_test")
 
 
 my_df = spark.sql("select * from demo.test")

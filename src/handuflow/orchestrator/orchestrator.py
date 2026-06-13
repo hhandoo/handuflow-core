@@ -11,7 +11,10 @@ import pandas as pd
 from pyspark.sql import SparkSession
 
 # internal
-from handuflow.constants import SOURCE_TO_BRONZE
+from handuflow.constants import (
+    is_ingestion_direction,
+    is_within_unity_catalog_direction,
+)
 from handuflow.config.logging_config import LoggingConfig
 from handuflow.config.config_paths import cfg_get
 from handuflow.config.spark_session import is_databricks_runtime
@@ -113,7 +116,7 @@ class Orchestrator:
         try:
             log_step(self.logger, "run", status="START", run_id=self.run_id)
             self.logger.warning(
-                "SOURCE_TO_BRONZE feeds load into bronze with reduced validation."
+                "INGESTION feeds load external data with reduced validation."
             )
             ready = self._system_prerequisites()
             if not ready:
@@ -188,6 +191,11 @@ class Orchestrator:
             phase_errors=list(self._phase_errors),
             archived_log_path=archived_log,
             message=message,
+            master_specs=(
+                self.validated_master_specs.copy()
+                if self.validated_master_specs is not None
+                else None
+            ),
         )
 
     def _finalize_run(self, run_status: RunStatus) -> str | None:
@@ -294,12 +302,12 @@ class Orchestrator:
 
         load_results: list[LoadResult] = []
         extraction_df = self.validated_master_specs[
-            self.validated_master_specs["data_flow_direction"] == SOURCE_TO_BRONZE
+            self.validated_master_specs["data_flow_direction"].map(is_ingestion_direction)
         ]
         if not extraction_df.empty:
             log_step(
                 self.logger,
-                "bronze_extraction",
+                "ingestion",
                 status="START",
                 feed_count=len(extraction_df),
             )
@@ -310,28 +318,35 @@ class Orchestrator:
             load_results.extend(controller.get_load_results())
             log_step(
                 self.logger,
-                "bronze_extraction",
+                "ingestion",
                 status="OK",
                 feed_count=len(extraction_df),
             )
 
         self.validated_master_specs = self.validated_master_specs[
-            self.validated_master_specs["data_flow_direction"] != SOURCE_TO_BRONZE
+            self.validated_master_specs["data_flow_direction"].map(
+                is_within_unity_catalog_direction
+            )
         ]
 
         if self.validated_master_specs.empty:
-            log_step(self.logger, "medallion_pipeline", status="SKIP", reason="no_medallion_feeds")
+            log_step(
+                self.logger,
+                "unity_catalog_pipeline",
+                status="SKIP",
+                reason="no_within_unity_catalog_feeds",
+            )
             self._last_load_results = load_results
             self._last_dq_manifest = []
             self._emit_run_report(feed_manifest=[], load_results=load_results)
             return
 
-        medallion_count = len(self.validated_master_specs)
+        catalog_count = len(self.validated_master_specs)
         log_step(
             self.logger,
-            "medallion_pipeline",
+            "unity_catalog_pipeline",
             status="START",
-            feed_count=medallion_count,
+            feed_count=catalog_count,
         )
 
         dq_runner = FeedDataQualityRunner(
@@ -343,7 +358,7 @@ class Orchestrator:
             self._phase_errors,
             dq_runner.run,
             reraise=False,
-            feed_count=medallion_count,
+            feed_count=catalog_count,
         )
 
         pre_load_manifest = dq_runner.finalize()
@@ -352,16 +367,27 @@ class Orchestrator:
             for entry in pre_load_manifest
             if entry.get("can_ingest") is True
         ]
-        skipped_feed_ids = [
+        blocked_feed_ids = [
             entry["feed_id"]
             for entry in pre_load_manifest
             if entry.get("can_ingest") is not True
         ]
         self.logger.info("Feeds approved for ingest: %s", ingestible_feed_ids)
-        if skipped_feed_ids:
+        for entry in pre_load_manifest:
+            if entry.get("can_ingest") is True:
+                continue
             self.logger.warning(
-                "Feeds skipped (pre-load DQ failed or not configured): %s",
-                skipped_feed_ids,
+                "Feed blocked from load (pre-load DQ) | feed_id=%s reason=%s "
+                "standard_passed=%s pre_load_passed=%s",
+                entry.get("feed_id"),
+                entry.get("ingest_block_reason"),
+                entry.get("standard_checks_passed"),
+                entry.get("comprehensive_pre_load_passed"),
+            )
+        if blocked_feed_ids:
+            self.logger.warning(
+                "Feeds not loaded due to pre-load DQ gate: %s",
+                blocked_feed_ids,
             )
 
         loaded_feed_ids: set = set()
@@ -373,7 +399,7 @@ class Orchestrator:
                 allowed_df=allowed_df, spark=self.spark, config=self.config
             )
             run_phase(
-                "medallion_load",
+                "unity_catalog_load",
                 self._phase_errors,
                 controller.run,
                 reraise=False,
@@ -404,10 +430,10 @@ class Orchestrator:
         )
         log_step(
             self.logger,
-            "medallion_pipeline",
+            "unity_catalog_pipeline",
             status="OK",
             loaded_feeds=len(loaded_feed_ids),
-            skipped_feeds=len(skipped_feed_ids),
+            skipped_feeds=len(blocked_feed_ids),
         )
 
     def _emit_run_report(

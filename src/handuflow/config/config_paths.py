@@ -66,6 +66,26 @@ def cfg_get_int(
         return default
 
 
+def cfg_get_bool(
+    config: configparser.ConfigParser,
+    key: str,
+    default: bool = False,
+    *,
+    section: str = "DEFAULT",
+) -> bool:
+    raw = cfg_get(config, key, str(default).lower(), section=section).strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def is_auto_vacuum_enabled(config: configparser.ConfigParser) -> bool:
+    """When True, post-run cleanup runs Delta OPTIMIZE and VACUUM on spec tables."""
+    return cfg_get_bool(config, "is_auto_vacuum_enabled", default=True)
+
+
 def runtime_mode(config: configparser.ConfigParser) -> str:
     """Returns 'local' or 'unity_catalog'."""
     mode = cfg_get(config, "runtime_mode", "local", section="PLATFORM").lower()

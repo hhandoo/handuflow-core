@@ -112,7 +112,7 @@ Minimal medallion row:
 | Column | Example |
 |--------|---------|
 | `feed_id` | `101` |
-| `data_flow_direction` | `BRONZE_TO_SILVER` |
+| `data_flow_direction` | `WITHIN_UNITY_CATALOG` |
 | `load_type` | `INCREMENTAL_CDC` |
 | `feed_type` | (display label) |
 | `target_unity_catalog` | `local` |

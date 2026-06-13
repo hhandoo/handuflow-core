@@ -33,7 +33,9 @@ class SCDType2(BaseLoadStrategy):
             self._enforce_load_type_consistency()
             if not self._create_staging_layer():
                 self.logger.warning(
-                    "SCD Type-2 skipped: no staging changes detected."
+                    "SCD Type-2 skipped for %s: source unchanged. "
+                    "No staging or target writes.",
+                    self._current_target_table_name,
                 )
                 return LoadResult(
                     feed_id=self.config.master_specs["feed_id"],

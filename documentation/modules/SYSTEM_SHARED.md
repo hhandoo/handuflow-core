@@ -11,7 +11,7 @@ Shared utilities for system cleanup and restore operations.
 | | |
 |---|---|
 | **Visibility** | Semi-public |
-| **Exports** | `is_delta_table`, `quote_table`, `TABLE_TYPE_SOURCE`, `TABLE_TYPE_TARGET`, `collect_master_spec_table_entries`, `expected_table_set` |
+| **Exports** | `is_delta_table`, `quote_table`, `TABLE_TYPE_SOURCE`, `TABLE_TYPE_TARGET`, `TABLE_TYPE_STAGING`, `collect_master_spec_table_entries`, `collect_cleanup_table_entries`, `collect_restore_point_table_entries`, `expected_table_set`, `expected_restore_table_set` |
 
 ---
 
@@ -40,7 +40,7 @@ Shared utilities for system cleanup and restore operations.
 | | |
 |---|---|
 | **Visibility** | Semi-public |
-| **Purpose** | Collect source/target table names from master specs. |
+| **Purpose** | Collect source/target and restore-scoped table names from master specs. |
 
 ### Constants
 
@@ -48,16 +48,23 @@ Shared utilities for system cleanup and restore operations.
 |------|-------------|
 | `TABLE_TYPE_SOURCE` | `"SOURCE"` |
 | `TABLE_TYPE_TARGET` | `"TARGET"` |
+| `TABLE_TYPE_STAGING` | `"STAGING"` |
 
 ### Functions
 
 | Name | Description |
 |------|-------------|
 | `master_specs_to_dataframe(specs)` | Normalize specs input to DataFrame |
-| `collect_master_spec_table_entries(specs, catalog_resolver)` | List of `(table_name, table_type)` tuples |
-| `expected_table_set(specs, catalog_resolver) -> set[str]` | Unique qualified table names |
+| `collect_master_spec_table_entries(specs, config)` | Source + target `(table_name, table_type)` pairs |
+| `collect_cleanup_table_entries(specs, config)` | Source + target + staging table names (post-run cleanup) |
+| `expected_table_set(specs, config) -> set[str]` | Unique source and target table names |
+| `TABLE_TYPE_SOURCE` | `"SOURCE"` |
+| `TABLE_TYPE_TARGET` | `"TARGET"` |
+| `TABLE_TYPE_STAGING` | `"STAGING"` |
+| `collect_restore_point_table_entries(specs, config)` | Source + target + staging for `WITHIN_UNITY_CATALOG`; target only for `INGESTION` |
+| `expected_restore_table_set(specs, config) -> set[str]` | Target tables required for a complete restore point |
 
-Walks all active feeds, resolves bronze/silver/gold source and target tables via `CatalogResolver`.
+Walks all active feeds via `CatalogResolver`. Restore scope includes `staging.t_full_*`, `staging.t_incr_*`, and `staging.t_incr_cdf_changes_*` when those tables exist.
 
 **Dependencies:** `config.catalog_resolver`
 

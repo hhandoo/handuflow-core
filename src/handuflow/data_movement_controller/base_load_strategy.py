@@ -40,7 +40,7 @@ class BaseLoadStrategy(ABC):
             self.config.target_table_name,
         )
         self._staging_schema = self._catalog.staging_schema()
-        self._full_load_staging_changed = True
+        self._staging_source_changed = True
 
         self.logger.info(
             "Target table=%s staging=%s runtime=%s",
@@ -183,20 +183,15 @@ class BaseLoadStrategy(ABC):
         )
         # Snapshot before drop/write: rebuild_df is often a lazy scan of table_name.
         rebuild_df = self._prepare_partition_columns(rebuild_df)
-        tmp_table = f"_handuflow_rebuild_{uuid.uuid4().hex[:12]}"
-        rebuild_df.write.format("delta").mode("overwrite").saveAsTable(tmp_table)
+        tmp_table = f"default._handuflow_rebuild_{uuid.uuid4().hex[:12]}"
+        self._overwrite_delta_table(
+            rebuild_df,
+            tmp_table,
+            overwrite_schema=True,
+        )
         try:
             materialized = self._prepare_partition_columns(self.spark.table(tmp_table))
             row_count = materialized.count()
-            self._purge_delta_table(table_name)
-            if "." in table_name:
-                db_name, short_name = table_name.split(".", 1)
-                warehouse = Path(
-                    self.spark.conf.get("spark.sql.warehouse.dir", "spark-warehouse")
-                ).resolve()
-                table_dir = warehouse / f"{db_name}.db" / short_name
-                if table_dir.exists():
-                    shutil.rmtree(table_dir, ignore_errors=True)
             self._write_delta_table(
                 materialized,
                 table_name,
@@ -211,7 +206,7 @@ class BaseLoadStrategy(ABC):
                 self._partition_keys(),
             )
         finally:
-            self.spark.sql(f"DROP TABLE IF EXISTS {tmp_table}")
+            self._purge_delta_table(tmp_table)
         return True
 
     def _staging_partition_rebuild_needed(
@@ -431,6 +426,149 @@ class BaseLoadStrategy(ABC):
         history_df = delta_tbl.history(1)  # get only the latest record
         return history_df.collect()[0]["version"]
 
+    def _format_history_timestamp(self, ts) -> str | None:
+        if ts is None:
+            return None
+        if hasattr(ts, "isoformat"):
+            return ts.isoformat(sep=" ", timespec="seconds")
+        text = str(ts).replace("T", " ")
+        return text[:19] if len(text) >= 19 else text
+
+    def _latest_source_history_marker(
+        self, source_table_name: str
+    ) -> tuple[int | None, str | None]:
+        """Latest Delta version and commit timestamp for a source table."""
+        if not source_table_name:
+            return None, None
+        latest = (
+            self.spark.sql(f"DESCRIBE HISTORY {source_table_name}")
+            .orderBy(F.desc("version"))
+            .select("version", "timestamp")
+            .first()
+        )
+        if latest is None or latest["version"] is None:
+            return None, None
+        return int(latest["version"]), self._format_history_timestamp(latest["timestamp"])
+
+    def _source_row_signature(self, df: DataFrame) -> str:
+        """Fingerprint of source payload columns (detects unchanged data across rewrites)."""
+        cols = sorted(c for c in df.columns if not c.startswith("_x_"))
+        if not cols:
+            return "0:empty"
+        row_sig = F.sha2(
+            F.concat_ws(
+                "||",
+                *[F.coalesce(F.col(c).cast("string"), F.lit("")) for c in cols],
+            ),
+            256,
+        )
+        agg = (
+            df.select(row_sig.alias("_row_sig"))
+            .agg(
+                F.count(F.lit(1)).alias("row_count"),
+                F.sha2(F.sum(F.hash(F.col("_row_sig"))).cast("string"), 256).alias(
+                    "payload"
+                ),
+            )
+            .first()
+        )
+        return f"{agg['row_count']}:{agg['payload']}"
+
+    def _staging_source_marker_matches(
+        self,
+        full_table: str,
+        *,
+        latest_source_version: int | None,
+        latest_source_commit_time: str | None,
+        source_row_signature: str | None = None,
+    ) -> bool:
+        """
+        True when staging already reflects the current source.
+
+        Matches on Delta head (version + commit time) or on row signature when
+        the source table was rewritten but row content is unchanged.
+        """
+        props = {
+            row["key"]: row["value"]
+            for row in self.spark.sql(f"SHOW TBLPROPERTIES {full_table}").collect()
+        }
+        version_prop = props.get("_x_latest_source_version")
+        commit_prop = props.get("_x_latest_source_commit_time")
+        if commit_prop is not None:
+            commit_prop = self._format_history_timestamp(commit_prop)
+
+        if (
+            latest_source_version is not None
+            and version_prop is not None
+            and int(version_prop) == latest_source_version
+            and commit_prop == latest_source_commit_time
+        ):
+            return True
+
+        stored_sig = props.get("_x_latest_source_row_signature")
+        return bool(
+            source_row_signature
+            and stored_sig
+            and stored_sig == source_row_signature
+        )
+
+    def _set_staging_source_marker(
+        self,
+        full_table: str,
+        *,
+        latest_source_version: int | None,
+        latest_source_commit_time: str | None,
+        source_row_signature: str | None = None,
+        extra_properties: str = "",
+    ) -> None:
+        props = [f"'_x_latest_source_version' = '{latest_source_version}'"]
+        if latest_source_commit_time is not None:
+            escaped = latest_source_commit_time.replace("'", "''")
+            props.append(f"'_x_latest_source_commit_time' = '{escaped}'")
+        if source_row_signature is not None:
+            escaped = source_row_signature.replace("'", "''")
+            props.append(f"'_x_latest_source_row_signature' = '{escaped}'")
+        if extra_properties:
+            props.append(extra_properties.strip().strip(","))
+        self.spark.sql(
+            f"ALTER TABLE {full_table} SET TBLPROPERTIES ({', '.join(props)})"
+        )
+
+    def _try_reuse_staging_on_unchanged_source(
+        self,
+        full_table: str,
+        *,
+        latest_source_version: int | None,
+        latest_source_commit_time: str | None,
+        source_row_signature: str,
+        partition_rebuild_required: bool,
+        load_type_label: str,
+    ) -> bool:
+        """
+        Return True when existing staging already reflects the current source.
+
+        Sets ``_staging_source_changed`` to False and performs no staging writes.
+        """
+        if partition_rebuild_required:
+            return False
+        if not self.spark.catalog.tableExists(full_table):
+            return False
+        if not self._staging_source_marker_matches(
+            full_table,
+            latest_source_version=latest_source_version,
+            latest_source_commit_time=latest_source_commit_time,
+            source_row_signature=source_row_signature,
+        ):
+            return False
+        self.logger.info(
+            "Source unchanged; reusing %s snapshot (row_signature=%s). "
+            "No staging or target writes.",
+            load_type_label,
+            source_row_signature,
+        )
+        self._staging_source_changed = False
+        return True
+
     def _create_full_load_staging_layer(self) -> bool:
         """
         FULL_LOAD staging keeps only ``t_full`` as a full source snapshot.
@@ -458,7 +596,6 @@ class BaseLoadStrategy(ABC):
         )
 
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {staging_schema}")
-        self._drop_staging_tables(incr_table, all_changes_table)
 
         try:
             df = (
@@ -467,15 +604,12 @@ class BaseLoadStrategy(ABC):
                 else spark.read.table(self.config.feed_specs["source_table_name"])
             )
             latest_source_version = -9999
-            if self.config.feed_specs["source_table_name"]:
-                src_history = spark.sql(
-                    f"DESCRIBE HISTORY {self.config.feed_specs['source_table_name']}"
+            latest_source_commit_time: str | None = None
+            source_table = self.config.feed_specs["source_table_name"]
+            if source_table:
+                latest_source_version, latest_source_commit_time = (
+                    self._latest_source_history_marker(source_table)
                 )
-                agg_result = src_history.agg({"version": "max"}).first()
-                if agg_result and agg_result[0] is not None:
-                    latest_source_version = int(agg_result[0])
-                else:
-                    latest_source_version = None
             if df is None or len(df.columns) == 0:
                 self.logger.info("Source empty. Skipping FULL_LOAD staging.")
                 return False
@@ -486,11 +620,25 @@ class BaseLoadStrategy(ABC):
                 allow_empty=self.config.feed_specs.get("allow_empty_source", False),
             )
             self.logger.info("FULL_LOAD staging source row count: %s", source_row_count)
+            source_row_signature = self._source_row_signature(df)
 
             full_exists = spark.catalog.tableExists(full_table)
             partition_mismatch = (
                 full_exists and self._delta_partition_columns_mismatch(full_table)
             )
+
+            if self._try_reuse_staging_on_unchanged_source(
+                full_table,
+                latest_source_version=latest_source_version,
+                latest_source_commit_time=latest_source_commit_time,
+                source_row_signature=source_row_signature,
+                partition_rebuild_required=partition_mismatch,
+                load_type_label="FULL_LOAD staging",
+            ):
+                return True
+
+            self._drop_staging_tables(incr_table, all_changes_table)
+
             if partition_mismatch:
                 self.logger.info(
                     "FULL_LOAD staging partition scheme changed; rebuilding %s",
@@ -500,24 +648,13 @@ class BaseLoadStrategy(ABC):
                 full_exists = False
 
             if full_exists:
-                props = spark.sql(f"SHOW TBLPROPERTIES {full_table}")
-                row = (
-                    props.filter("key = '_x_latest_source_version'")
-                    .select("value")
-                    .first()
+                self.logger.info(
+                    "FULL_LOAD staging refresh required "
+                    "(source version=%s commit_time=%s row_signature=%s).",
+                    latest_source_version,
+                    latest_source_commit_time,
+                    source_row_signature,
                 )
-                version_prop = int(row[0]) if row is not None else None
-                if (
-                    version_prop is not None
-                    and version_prop == latest_source_version
-                    and not partition_mismatch
-                ):
-                    self.logger.info(
-                        "Source unchanged; reusing FULL_LOAD staging snapshot."
-                    )
-                    self._full_load_staging_changed = False
-                    self._current_staging_table_df = spark.read.table(full_table)
-                    return True
 
             load_id = str(uuid.uuid4())
             df_cols = df.columns
@@ -532,18 +669,21 @@ class BaseLoadStrategy(ABC):
                 df = self._prepare_partition_columns(df)
                 self._validate_partition_columns_not_null(df)
 
-            self._full_load_staging_changed = True
+            self._staging_source_changed = True
             self._write_staging_delta(df, full_table, mode="overwrite")
             if (
                 self.config.feed_specs["selection_query"] == ""
                 or self.config.feed_specs["selection_query"] is None
             ):
-                spark.sql(
-                    f"""ALTER TABLE {full_table} SET TBLPROPERTIES (
-                    '_x_latest_source_version' = '{latest_source_version}',
-                    'delta.autoOptimize.autoCompact' = 'false',
-                    'delta.autoOptimize.optimizeWrite' = 'false'
-                )"""
+                self._set_staging_source_marker(
+                    full_table,
+                    latest_source_version=latest_source_version,
+                    latest_source_commit_time=latest_source_commit_time,
+                    source_row_signature=source_row_signature,
+                    extra_properties=(
+                        "'delta.autoOptimize.autoCompact' = 'false', "
+                        "'delta.autoOptimize.optimizeWrite' = 'false'"
+                    ),
                 )
             self._current_staging_table_df = spark.read.table(full_table)
             self.logger.info(
@@ -599,16 +739,12 @@ class BaseLoadStrategy(ABC):
                 else spark.read.table(self.config.feed_specs["source_table_name"])
             )
             latest_source_version = -9999
-            if self.config.feed_specs["source_table_name"]:
-                src_history = spark.sql(
-                    f"DESCRIBE HISTORY {self.config.feed_specs['source_table_name']}"
+            latest_source_commit_time: str | None = None
+            source_table = self.config.feed_specs["source_table_name"]
+            if source_table:
+                latest_source_version, latest_source_commit_time = (
+                    self._latest_source_history_marker(source_table)
                 )
-                agg_result = src_history.agg({"version": "max"}).first()
-
-                if agg_result and agg_result[0] is not None:
-                    latest_source_version = int(agg_result[0])
-                else:
-                    latest_source_version = None
             else:
                 self.logger.info("Source Data is in the form of a query:")
                 self.logger.info(self.config.feed_specs["selection_query"])
@@ -621,40 +757,31 @@ class BaseLoadStrategy(ABC):
                 allow_empty=self.config.feed_specs.get("allow_empty_source", False),
             )
             self.logger.info("Staging source row count: %s", source_row_count)
+            source_row_signature = self._source_row_signature(df)
             full_exists = spark.catalog.tableExists(full_table)
             partition_mismatch = self._staging_partition_rebuild_needed(
                 full_table, incr_table, all_changes_table
             )
+            if self._try_reuse_staging_on_unchanged_source(
+                full_table,
+                latest_source_version=latest_source_version,
+                latest_source_commit_time=latest_source_commit_time,
+                source_row_signature=source_row_signature,
+                partition_rebuild_required=partition_mismatch,
+                load_type_label="staging",
+            ):
+                return False
+
             if partition_mismatch:
                 self.logger.info(
                     "Staging partition scheme changed; rebuilding staging tables "
                     "(partition_keys=%s)",
                     self._partition_keys(),
                 )
-            version_prop = None
-            if full_exists:
-                props = spark.sql(f"SHOW TBLPROPERTIES {full_table}")
-                row = (
-                    props.filter("key = '_x_latest_source_version'")
-                    .select("value")
-                    .first()
+                self._drop_staging_tables(
+                    full_table, incr_table, all_changes_table
                 )
-                if row is not None:
-                    version_prop = int(row[0])
-                self.logger.info(
-                    "Latest source version: %s, Latest table version: %s",
-                    latest_source_version,
-                    version_prop,
-                )
-                if version_prop == latest_source_version:
-                    if partition_mismatch:
-                        self._drop_staging_tables(
-                            full_table, incr_table, all_changes_table
-                        )
-                        full_exists = False
-                    else:
-                        self.logger.warning("No new data to load.")
-                        return False
+                full_exists = False
 
             df_cols = df.columns
             load_id = str(uuid.uuid4())
@@ -683,14 +810,21 @@ class BaseLoadStrategy(ABC):
                     or self.config.feed_specs["selection_query"] == None
                 ):
                     self.logger.info(
-                        f"Updating _x_latest_source_version in full table [{full_table}] with {latest_source_version}"
+                        "Updating staging source marker on [%s] "
+                        "(version=%s commit_time=%s)",
+                        full_table,
+                        latest_source_version,
+                        latest_source_commit_time,
                     )
-                    spark.sql(
-                        f"""ALTER TABLE {full_table} SET TBLPROPERTIES (
-                        '_x_latest_source_version' = '{latest_source_version}',
-                        'delta.autoOptimize.autoCompact' = 'false',
-                        'delta.autoOptimize.optimizeWrite' = 'false'
-                    )"""
+                    self._set_staging_source_marker(
+                        full_table,
+                        latest_source_version=latest_source_version,
+                        latest_source_commit_time=latest_source_commit_time,
+                        source_row_signature=source_row_signature,
+                        extra_properties=(
+                            "'delta.autoOptimize.autoCompact' = 'false', "
+                            "'delta.autoOptimize.optimizeWrite' = 'false'"
+                        ),
                     )
                 spark.sql(
                     f"ALTER TABLE {full_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)"
@@ -836,10 +970,17 @@ class BaseLoadStrategy(ABC):
                 or self.config.feed_specs["selection_query"] is None
             ):
                 self.logger.info(
-                    f"Updating _x_latest_source_version in full table [{full_table}] with {latest_source_version}"
+                    "Updating staging source marker on [%s] "
+                    "(version=%s commit_time=%s)",
+                    full_table,
+                    latest_source_version,
+                    latest_source_commit_time,
                 )
-                spark.sql(
-                    f"""ALTER TABLE {full_table} SET TBLPROPERTIES ('_x_latest_source_version' = '{latest_source_version}')"""
+                self._set_staging_source_marker(
+                    full_table,
+                    latest_source_version=latest_source_version,
+                    latest_source_commit_time=latest_source_commit_time,
+                    source_row_signature=source_row_signature,
                 )
             self._current_staging_table_df = spark.read.table(full_table)
             self._current_staging_incremental_table_df = spark.read.table(incr_table)

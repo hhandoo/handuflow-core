@@ -25,6 +25,16 @@ class FullLoad(BaseLoadStrategy):
     def load(self) -> LoadResult:
         try:
             self._enforce_load_type_consistency()
+            staging_full_table = (
+                f"{self._staging_schema}.t_full_{self.config.target_table_name}"
+            )
+            self.logger.warning(
+                "FULL_LOAD: staging (%s) and target (%s) use mode=overwrite; "
+                "prior contents are replaced each run and are not restored "
+                "incrementally.",
+                staging_full_table,
+                self._current_target_table_name,
+            )
             is_staging_layer_created = self._create_staging_layer()
 
             if not is_staging_layer_created:
@@ -40,7 +50,7 @@ class FullLoad(BaseLoadStrategy):
                     total_rows_updated=0,
                 )
 
-            if not self._full_load_staging_changed:
+            if not self._staging_source_changed:
                 self.logger.info(
                     "FULL LOAD skipped: source matches staging for %s.",
                     self._current_target_table_name,

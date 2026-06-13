@@ -135,8 +135,15 @@ from handuflow import (
     initiate_restore,
 )
 
-rp_id = create_restore_point(spark, cfg, master_specs_df, created_by="user")
-request_id = initiate_restore(spark, cfg, master_specs_df, rp_id, requested_by="user")
+from handuflow import run, load_config, create_restore_point, initiate_restore
+
+cfg = load_config("/path/to/config.ini")
+result = run(spark, config=cfg)
+
+rp_id = create_restore_point(spark, cfg, created_by="user")
+request_id = initiate_restore(
+    spark, cfg, rp_id, requested_by="user"
+)
 ```
 
 See [SYSTEM_RESTORE.md](SYSTEM_RESTORE.md).

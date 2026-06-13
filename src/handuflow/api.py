@@ -21,7 +21,15 @@ from handuflow.config import (
     load_config,
     validate_handuflow_config,
 )
-from handuflow.constants import SOURCE_TO_BRONZE, SUPPORTED_LOAD_TYPES
+from handuflow.constants import (
+    ALLOWED_DATA_FLOW_DIRECTIONS,
+    INGESTION,
+    SOURCE_TO_BRONZE,
+    SUPPORTED_LOAD_TYPES,
+    WITHIN_UNITY_CATALOG,
+    is_ingestion_direction,
+    is_within_unity_catalog_direction,
+)
 from handuflow.exception import (
     ERROR_CODES,
     BaseException,
@@ -42,6 +50,7 @@ from handuflow.orchestrator import Orchestrator, RunResult, RunStatus
 from handuflow.system_restore import (
     SystemRestore,
     create_restore_point,
+    get_latest_restore_point_id,
     get_restore_point_details,
     initiate_restore,
     list_restore_points,
@@ -61,6 +70,11 @@ __all__ = [
     "load_config",
     "validate_handuflow_config",
     "is_databricks_runtime",
+    "INGESTION",
+    "WITHIN_UNITY_CATALOG",
+    "ALLOWED_DATA_FLOW_DIRECTIONS",
+    "is_ingestion_direction",
+    "is_within_unity_catalog_direction",
     "SOURCE_TO_BRONZE",
     "SUPPORTED_LOAD_TYPES",
     "BaseException",
@@ -81,6 +95,7 @@ __all__ = [
     "create_restore_point",
     "list_restore_points",
     "get_restore_point_details",
+    "get_latest_restore_point_id",
     "initiate_restore",
 ]
 

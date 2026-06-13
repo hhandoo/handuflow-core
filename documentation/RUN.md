@@ -189,31 +189,35 @@ Restore is **not** called automatically by `Orchestrator.run()` — invoke it ex
 
 ```python
 import configparser
-import pandas as pd
 from handuflow import (
+    run,
+    load_config,
     create_restore_point,
     list_restore_points,
     get_restore_point_details,
     initiate_restore,
 )
 
-cfg = configparser.ConfigParser()
-cfg.read("/path/to/handuflow_dir/config.ini")
-master_specs_df = pd.read_excel(
-    f"{cfg['DEFAULT']['file_hunt_path']}/master_specs.xlsx",
-    sheet_name="master_specs",
-)
+cfg = load_config("/path/to/handuflow_dir/config.ini")
 
-# Snapshot current Delta versions (all master-spec tables)
-rp_id = create_restore_point(spark, cfg, master_specs_df, created_by="ops@corp")
+# Run pipeline; validated master specs are on the result
+result = run(spark, config=cfg)
+print(result.status)
+
+# Snapshot current Delta versions (target + staging tables)
+rp_id = create_restore_point(
+    spark, cfg, created_by="ops@corp"
+)
 print(rp_id)  # HFRP0001, HFRP0002, ...
 
-# List / inspect
-print(list_restore_points(spark, cfg, master_specs_df))
-print(get_restore_point_details(spark, cfg, master_specs_df, rp_id))
+# List / inspect (master specs always read from config.ini)
+print(list_restore_points(spark, cfg))
+print(get_restore_point_details(spark, cfg, rp_id))
 
 # Roll back all tables to that point
-request_id = initiate_restore(spark, cfg, master_specs_df, rp_id, requested_by="ops@corp")
+request_id = initiate_restore(
+    spark, cfg, rp_id, requested_by="ops@corp"
+)
 ```
 
 Full guide: [SYSTEM_RESTORE.md](SYSTEM_RESTORE.md)

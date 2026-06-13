@@ -31,10 +31,14 @@ No extra or missing columns — startup validation fails if the set differs.
 
 | Value | When it runs | DQ |
 |-------|----------------|-----|
-| `SOURCE_TO_BRONZE` | First, before medallion DQ | Skipped (reduced validation) |
-| Anything else (e.g. `BRONZE_TO_SILVER`) | After bronze, with pre/post DQ | Full [feed spec](FEED_SPECS.md) + [DQ](DATA_QUALITY.md) |
+| `INGESTION` | First, for external/API/storage ingest | Skipped (reduced validation) |
+| `WITHIN_UNITY_CATALOG` | Loads between Unity Catalog tables | Full [feed spec](FEED_SPECS.md) + [DQ](DATA_QUALITY.md) |
 
-Bronze rows use `load_type` `API_EXTRACTOR` or `STORAGE_FETCH`. Medallion rows use `FULL_LOAD`, `APPEND_LOAD`, `INCREMENTAL_CDC`, or `SCD_TYPE_2`.
+Only these two values are allowed in `data_flow_direction`.
+
+`INGESTION` rows use `load_type` `API_EXTRACTOR` or `STORAGE_FETCH`. `WITHIN_UNITY_CATALOG` rows use `FULL_LOAD`, `APPEND_LOAD`, `INCREMENTAL_CDC`, or `SCD_TYPE_2`.
+
+Source and target table names in `feed_specs` / master specs are used as-is (any Unity Catalog schema). The system does not infer bronze/silver/gold layer tables.
 
 ## Load types
 
@@ -68,7 +72,7 @@ No source changes → load **skipped**. One load type per target (Delta property
 
 | feed_id | data_flow_direction | load_type | target_unity_catalog | feed_specs |
 |---------|---------------------|-----------|----------------------|------------|
-| 101 | BRONZE_TO_SILVER | INCREMENTAL_CDC | local | `{"primary_key":"id",...}` (full JSON in cell) |
+| 101 | WITHIN_UNITY_CATALOG | INCREMENTAL_CDC | local | `{"primary_key":"id",...}` (full JSON in cell) |
 
 Paste JSON as a single line in Excel or use a formula/export tool; invalid JSON fails validation.
 

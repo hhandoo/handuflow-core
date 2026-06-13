@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 
 # external
 import pandas as pd
-from handuflow.config.config_paths import cfg_get, cfg_get_int, global_vacuum_hours
+from handuflow.config.config_paths import cfg_get, cfg_get_int, global_vacuum_hours, is_auto_vacuum_enabled
 from handuflow.config.run_logger import log_step
 from handuflow.system_shared.delta_utils import is_delta_table, quote_table
-from handuflow.system_shared.spec_tables import collect_master_spec_table_entries
+from handuflow.system_shared.spec_tables import collect_cleanup_table_entries
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -35,6 +35,7 @@ class SystemCleanup:
         self.master_specs = master_specs
         self.spark = spark
         self.global_vacuum_hours = global_vacuum_hours(config)
+        self.auto_vacuum_enabled = is_auto_vacuum_enabled(config)
         self.retention_days = cfg_get_int(
             config,
             "retention_policy_in_days",
@@ -59,6 +60,7 @@ class SystemCleanup:
             status="START",
             retention_days=self.retention_days,
             global_vacuum_hours=self.global_vacuum_hours,
+            is_auto_vacuum_enabled=self.auto_vacuum_enabled,
         )
         removed_logs = self.__remove_old_logs()
         removed_outputs = self.__remove_old_outputs()
@@ -89,8 +91,10 @@ class SystemCleanup:
         total_deleted = 0
 
         self.logger.info(
-            "Delta retention starting | global_vacuum_hours=%s | table_count=%s",
+            "Delta retention starting | global_vacuum_hours=%s | "
+            "is_auto_vacuum_enabled=%s | table_count=%s",
             self.global_vacuum_hours,
+            self.auto_vacuum_enabled,
             len(tables),
         )
 
@@ -121,12 +125,7 @@ class SystemCleanup:
     def _collect_master_spec_tables(self) -> set[str]:
         if self.master_specs is None or self.master_specs.empty:
             return set()
-        return {
-            name
-            for name, _ in collect_master_spec_table_entries(
-                self.master_specs, self.config
-            )
-        }
+        return collect_cleanup_table_entries(self.master_specs, self.config)
 
     def _apply_delta_retention(self, table_name: str) -> int | None:
         hours = self.global_vacuum_hours
@@ -167,19 +166,25 @@ class SystemCleanup:
                 list(_RETENTION_TIMESTAMP_COLUMNS),
             )
 
-        self.spark.sql(f"OPTIMIZE {quoted}")
-        self.logger.info(
-            "Delta OPTIMIZE complete | table=%s | retention_hours=%s | status=OK",
-            table_name,
-            hours,
-        )
+        if self.auto_vacuum_enabled:
+            self.spark.sql(f"OPTIMIZE {quoted}")
+            self.logger.info(
+                "Delta OPTIMIZE complete | table=%s | retention_hours=%s | status=OK",
+                table_name,
+                hours,
+            )
 
-        self.spark.sql(f"VACUUM {quoted} RETAIN {hours} HOURS")
-        self.logger.info(
-            "Delta VACUUM complete | table=%s | retention_hours=%s | status=OK",
-            table_name,
-            hours,
-        )
+            self.spark.sql(f"VACUUM {quoted} RETAIN {hours} HOURS")
+            self.logger.info(
+                "Delta VACUUM complete | table=%s | retention_hours=%s | status=OK",
+                table_name,
+                hours,
+            )
+        else:
+            self.logger.info(
+                "Delta OPTIMIZE/VACUUM skip | table=%s | reason=is_auto_vacuum_enabled=false",
+                table_name,
+            )
         return deleted
 
     def _delete_expired_rows(

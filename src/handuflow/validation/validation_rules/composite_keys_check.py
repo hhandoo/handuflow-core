@@ -1,3 +1,4 @@
+from handuflow.constants import is_within_unity_catalog_direction
 from handuflow.validation.validation_rule import ValidationRule
 from handuflow.validation.validation_context import ValidationContext
 class CompositeKeysCheck(ValidationRule):
@@ -14,7 +15,7 @@ class CompositeKeysCheck(ValidationRule):
         
         for json_dict in context.mdf_feed_specs_array:
 
-            if json_dict['data_flow_direction'] != 'SOURCE_TO_BRONZE':
+            if is_within_unity_catalog_direction(json_dict["data_flow_direction"]):
                 data = json_dict['feed_specs_dict']
                 value = data.get("composite_key")
                 if "composite_key" not in data:

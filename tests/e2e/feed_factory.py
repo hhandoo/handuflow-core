@@ -42,7 +42,7 @@ def build_master_spec(
         "subsystem_name": "E2E",
         "category": "test",
         "sub_category": load_type,
-        "data_flow_direction": "BRONZE_TO_SILVER",
+        "data_flow_direction": "WITHIN_UNITY_CATALOG",
         "residing_layer": "silver",
         "feed_name": f"qaft_{load_type.lower()}_{feed_id}",
         "feed_type": "DELTA_TABLE",

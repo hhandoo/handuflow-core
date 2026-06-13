@@ -28,7 +28,8 @@ class AppendLoad(BaseLoadStrategy):
             is_staging_layer_created = self._create_staging_layer()
             if not is_staging_layer_created:
                 self.logger.warning(
-                    "APPEND LOAD skipped for %s: no staging changes detected.",
+                    "APPEND LOAD skipped for %s: source unchanged. "
+                    "No staging or target writes.",
                     self._current_target_table_name,
                 )
                 return LoadResult(

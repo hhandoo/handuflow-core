@@ -34,7 +34,7 @@ User guide: [SYSTEM_RESTORE.md](../SYSTEM_RESTORE.md)
 
 | Method | Description |
 |--------|-------------|
-| `create_restore_point(description)` | Snapshot all master-spec Delta tables; return restore point ID |
+| `create_restore_point(description)` | Snapshot target and staging Delta tables; return restore point ID |
 | `list_restore_points()` | List all restore points with metadata |
 | `get_restore_point_details(restore_point_id)` | Per-table version map for a point |
 | `initiate_restore(restore_point_id)` | Restore all tables to recorded versions |
@@ -45,10 +45,12 @@ Convenience wrappers that construct `SystemRestore` from `spark` + `config`:
 
 | Function | Description |
 |----------|-------------|
-| `create_restore_point(spark, config, description)` | Create restore point |
+| `create_restore_point(spark, config, created_by)` | Create restore point (specs from config) |
 | `list_restore_points(spark, config)` | List restore points |
 | `get_restore_point_details(spark, config, restore_point_id)` | Get details |
-| `initiate_restore(spark, config, restore_point_id)` | Execute restore |
+| `initiate_restore(spark, config, restore_point_id, requested_by)` | Execute restore |
+
+Master specs are always loaded from `{file_hunt_path}/{master_spec_name}` via `config.ini`.
 
 Also re-exported from `handuflow` root API.
 
@@ -61,7 +63,7 @@ Also re-exported from `handuflow` root API.
 
 ### Behavior
 
-1. Enumerate tables via `system_shared.spec_tables`
+1. Enumerate target and staging tables via `system_shared.spec_tables.collect_restore_point_table_entries`
 2. Record current Delta version per table (`DESCRIBE HISTORY`)
 3. On restore: `RESTORE TABLE ... TO VERSION AS OF <n>` per table
 4. Write audit row for each table restored

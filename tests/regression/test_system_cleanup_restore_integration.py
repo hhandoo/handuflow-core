@@ -7,10 +7,13 @@ Run: pytest tests/regression/test_system_cleanup_restore_integration.py -m integ
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
+
+from handuflow.config.config_paths import cfg_get
 
 from handuflow.system_cleanup.cleanup import SystemCleanup
 from handuflow.system_restore.restore import (
@@ -63,9 +66,23 @@ def _master_spec_row(
         "target_schema_name": target_schema,
         "target_table_name": target_table,
         "load_type": "FULL_LOAD",
-        "data_flow_direction": "BRONZE_TO_SILVER",
+        "data_flow_direction": "WITHIN_UNITY_CATALOG",
+        "is_active": True,
         "feed_specs": json.dumps(_feed_specs(source_table, target_schema)),
     }
+
+
+def _write_master_specs_for_config(config, df: pd.DataFrame) -> None:
+    if "is_active" not in df.columns:
+        df = df.copy()
+        df["is_active"] = True
+    file_hunt_path = cfg_get(config, "file_hunt_path")
+    master_spec_name = cfg_get(
+        config, "master_spec_name", "master_specs.xlsx", section="FILES"
+    )
+    path = os.path.join(file_hunt_path, master_spec_name)
+    os.makedirs(file_hunt_path, exist_ok=True)
+    df.to_excel(path, sheet_name="master_specs", index=False)
 
 
 def _write_delta_table(spark, table: str, rows: list[tuple]) -> None:
@@ -100,6 +117,7 @@ def restore_env(spark, retention_config):
     master_specs = pd.DataFrame(
         [_master_spec_row(1, source, schema, "target_tbl")]
     )
+    _write_master_specs_for_config(retention_config, master_specs)
     yield {
         "spark": spark,
         "config": retention_config,
@@ -208,6 +226,7 @@ def load_type_env(spark, retention_config, request):
             }
         ]
     )
+    _write_master_specs_for_config(retention_config, master_specs)
     yield {
         "spark": spark,
         "config": retention_config,
@@ -228,13 +247,13 @@ class TestSystemRestore:
         source = restore_env["source"]
         target = restore_env["target"]
 
-        rp_id = create_restore_point(spark, cfg, specs, created_by="regression")
+        rp_id = create_restore_point(spark, cfg, created_by="regression")
         assert rp_id == "HFRP0001"
 
-        details = get_restore_point_details(spark, cfg, specs, rp_id)
+        details = get_restore_point_details(spark, cfg, rp_id)
         assert details["is_valid"] is True
         assert details["includes_all_tables"] is True
-        assert details["table_count"] == 2
+        assert details["table_count"] == 1
 
         now = datetime.now(UTC).replace(tzinfo=None)
         _write_delta_table(
@@ -248,29 +267,151 @@ class TestSystemRestore:
             [(1, "after_snapshot", now)],
         )
 
-        request_id = initiate_restore(spark, cfg, specs, rp_id, requested_by="regression")
+        request_id = initiate_restore(spark, cfg, rp_id, requested_by="regression")
         assert request_id
 
-        for table in (source, target):
-            rows = spark.table(table).collect()
-            assert len(rows) == 2
-            assert {r["value"] for r in rows} == {"keep", "delete_me"}
+        source_rows = spark.table(source).collect()
+        assert len(source_rows) == 1
+        assert source_rows[0]["value"] == "after_snapshot"
 
-        points = list_restore_points(spark, cfg, specs)
+        target_rows = spark.table(target).collect()
+        assert len(target_rows) == 2
+        assert {r["value"] for r in target_rows} == {"keep", "delete_me"}
+
+        points = list_restore_points(spark, cfg)
         assert rp_id in points
+
+    def test_restore_includes_staging_when_present(self, restore_env):
+        spark = restore_env["spark"]
+        cfg = restore_env["config"]
+        specs = restore_env["master_specs"]
+        target = restore_env["target"]
+        staging = "staging.t_full_target_tbl"
+
+        spark.sql("CREATE DATABASE IF NOT EXISTS staging")
+        spark.sql(f"DROP TABLE IF EXISTS {staging}")
+        _write_delta_table(
+            spark,
+            staging,
+            [(1, "staging_row", datetime.now(UTC).replace(tzinfo=None))],
+        )
+
+        rp_id = create_restore_point(spark, cfg, created_by="regression")
+        details = get_restore_point_details(spark, cfg, rp_id)
+        captured = {row["table_name"] for row in details["tables"]}
+        assert target in captured
+        assert staging in captured
+        assert restore_env["source"] in captured
+
+        spark.sql(f"DROP TABLE IF EXISTS {staging}")
+
+    def test_create_restore_point_reuses_when_versions_unchanged(self, restore_env):
+        spark = restore_env["spark"]
+        cfg = restore_env["config"]
+        target = restore_env["target"]
+
+        rp_first = create_restore_point(spark, cfg, created_by="regression")
+        rp_second = create_restore_point(spark, cfg, created_by="regression")
+        assert rp_second == rp_first
+
+        latest_rows = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .filter("is_latest = true")
+            .select("restore_point_id")
+            .distinct()
+            .collect()
+        )
+        assert len(latest_rows) == 1
+        assert latest_rows[0]["restore_point_id"] == rp_first
+
+        distinct_ids = [
+            row["restore_point_id"]
+            for row in spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .select("restore_point_id")
+            .distinct()
+            .collect()
+        ]
+        assert distinct_ids == [rp_first]
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        _write_delta_table(
+            spark,
+            target,
+            [(1, "changed", now), (2, "changed2", now)],
+        )
+        rp_after_change = create_restore_point(spark, cfg, created_by="regression")
+        assert rp_after_change != rp_first
 
     def test_restore_validation_fails_for_unknown_point(self, restore_env):
         spark = restore_env["spark"]
         from handuflow.exception import SystemError
 
+        count_before = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .select("restore_point_id")
+            .distinct()
+            .count()
+        )
         with pytest.raises(SystemError):
             initiate_restore(
                 spark,
                 restore_env["config"],
-                restore_env["master_specs"],
                 "HFRP9999",
                 requested_by="regression",
             )
+        count_after = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .select("restore_point_id")
+            .distinct()
+            .count()
+        )
+        assert count_after == count_before
+
+    def test_initiate_restore_creates_pre_restore_snapshot(self, restore_env):
+        spark = restore_env["spark"]
+        cfg = restore_env["config"]
+        source = restore_env["source"]
+        target = restore_env["target"]
+
+        rp_id = create_restore_point(spark, cfg, created_by="regression")
+        count_before = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .select("restore_point_id")
+            .distinct()
+            .count()
+        )
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        _write_delta_table(
+            spark,
+            source,
+            [(1, "before_restore", now)],
+        )
+        _write_delta_table(
+            spark,
+            target,
+            [(1, "before_restore", now)],
+        )
+
+        initiate_restore(spark, cfg, rp_id, requested_by="regression")
+
+        count_after = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .select("restore_point_id")
+            .distinct()
+            .count()
+        )
+        assert count_after == count_before + 1
+
+        latest_rows = (
+            spark.table("system_admin.SYSTEM_RESTORE_POINTS")
+            .filter("is_latest = true")
+            .select("restore_point_id")
+            .distinct()
+            .collect()
+        )
+        assert len(latest_rows) == 1
+        assert latest_rows[0]["restore_point_id"] != rp_id
 
 
 @pytest.mark.parametrize("vacuum_hours", VACUUM_HOURS_MATRIX)
@@ -310,7 +451,7 @@ def test_restore_point_per_load_type(load_type_env):
     source = load_type_env["source"]
     target = load_type_env["target"]
 
-    rp_id = create_restore_point(spark, cfg, specs, created_by="regression")
+    rp_id = create_restore_point(spark, cfg, created_by="regression")
     assert rp_id.startswith("HFRP")
 
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -318,7 +459,7 @@ def test_restore_point_per_load_type(load_type_env):
     _write_delta_table(spark, source, mutated)
     _write_delta_table(spark, target, mutated)
 
-    initiate_restore(spark, cfg, specs, rp_id, requested_by="regression")
+    initiate_restore(spark, cfg, rp_id, requested_by="regression")
     values = {r["value"] for r in spark.table(target).collect()}
     assert values == {"keep", "row_b", "row_c"}
 
@@ -345,7 +486,7 @@ def test_multiple_restore_points_per_load_type(load_type_env, restore_scenario):
     snapshots.append(_snapshot())
     for i in range(point_count):
         restore_ids.append(
-            create_restore_point(spark, cfg, specs, created_by=f"regression_{scenario}")
+            create_restore_point(spark, cfg, created_by=f"regression_{scenario}")
         )
         now = datetime.now(UTC).replace(tzinfo=None)
         _write_delta_table(
@@ -364,6 +505,6 @@ def test_multiple_restore_points_per_load_type(load_type_env, restore_scenario):
     target_index = 0 if scenario == "single" else (point_count - 1 if scenario == "triple" else 1)
     target_index = min(target_index, len(restore_ids) - 1)
     initiate_restore(
-        spark, cfg, specs, restore_ids[target_index], requested_by="regression"
+        spark, cfg, restore_ids[target_index], requested_by="regression"
     )
     assert _snapshot() == snapshots[min(target_index, len(snapshots) - 1)]

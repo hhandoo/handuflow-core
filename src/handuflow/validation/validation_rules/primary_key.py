@@ -1,3 +1,4 @@
+from handuflow.constants import is_within_unity_catalog_direction
 from handuflow.validation.validation_rule import ValidationRule
 from handuflow.validation.validation_context import ValidationContext
 class PrimaryKey(ValidationRule):
@@ -14,7 +15,7 @@ class PrimaryKey(ValidationRule):
         
         for json_dict in context.mdf_feed_specs_array:
 
-            if json_dict['data_flow_direction'] != 'SOURCE_TO_BRONZE':
+            if is_within_unity_catalog_direction(json_dict["data_flow_direction"]):
 
                 feed_specs_dict = json_dict['feed_specs_dict']
 

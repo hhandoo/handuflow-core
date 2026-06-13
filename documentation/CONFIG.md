@@ -35,6 +35,7 @@ DMC_CONFIG temp/                   ← API parquet downloads
 | `log_retention_policy_in_days` | No | Delete old logs/reports (default `7`) |
 | `max_concurrent_batches` | No | Max parallel feeds per group (default `4`) |
 | `global_vacuum_hours` | No | Delta row retention + `VACUUM RETAIN` hours for all master-spec source/target tables (default `168`, min `168`, max `8760`) |
+| `is_auto_vacuum_enabled` | No | When `true` (default), post-run cleanup runs Delta `OPTIMIZE` and `VACUUM` on spec tables. Set `false` for local/UAT to avoid new Delta commits when source data is unchanged. |
 | `system_schema` | **Yes** | Schema for system metadata (`SYSTEM_RESTORE_POINTS`, `SYSTEM_RESTORE_AUDIT`). On Unity Catalog use `catalog.schema` or set feeds' catalog + `system_admin` |
 
 **Legacy aliases:** `GLOBAL_VACUUM_HOURS`, `SYSTEM_SCHEMA` (still read if lowercase keys are absent).

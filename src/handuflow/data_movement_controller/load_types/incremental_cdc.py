@@ -30,7 +30,9 @@ class IncrementalCDC(BaseLoadStrategy):
             self._enforce_load_type_consistency()
             if not self._create_staging_layer():
                 self.logger.warning(
-                    "Incremental CDC skipped: no staging changes detected."
+                    "Incremental CDC skipped for %s: source unchanged. "
+                    "No staging or target writes.",
+                    self._current_target_table_name,
                 )
                 return LoadResult(
                     feed_id=self.config.master_specs["feed_id"],

@@ -27,6 +27,50 @@ def test_can_ingest_requires_preload_comprehensive_when_configured():
         )
         is False
     )
+    assert (
+        FeedDataQualityRunner.ingest_block_reason(
+            {
+                "comprehensive_pre_load_configured": True,
+                "comprehensive_pre_load_passed": False,
+            }
+        )
+        == "pre_load_comprehensive_checks_failed"
+    )
+
+
+def test_can_ingest_blocks_when_preload_configured_but_not_passed():
+    assert (
+        FeedDataQualityRunner._can_ingest(
+            {
+                "standard_checks_configured": False,
+                "comprehensive_pre_load_configured": True,
+                "comprehensive_pre_load_passed": None,
+            }
+        )
+        is False
+    )
+    assert (
+        FeedDataQualityRunner.ingest_block_reason(
+            {
+                "comprehensive_pre_load_configured": True,
+                "comprehensive_pre_load_passed": None,
+            }
+        )
+        == "pre_load_comprehensive_checks_not_passed"
+    )
+
+
+def test_can_ingest_blocks_when_standard_configured_but_not_passed():
+    assert (
+        FeedDataQualityRunner._can_ingest(
+            {
+                "standard_checks_configured": True,
+                "standard_checks_passed": None,
+                "comprehensive_pre_load_configured": False,
+            }
+        )
+        is False
+    )
 
 
 def test_can_ingest_passes_when_no_checks_configured():

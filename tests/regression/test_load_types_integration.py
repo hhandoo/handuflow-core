@@ -52,7 +52,7 @@ def _master_spec(feed_id: int, load_type: str, target_table: str, feed_specs: di
         "target_table_name": target_table,
         "load_type": load_type,
         "feed_specs": json.dumps(feed_specs),
-        "data_flow_direction": "BRONZE_TO_SILVER",
+        "data_flow_direction": "WITHIN_UNITY_CATALOG",
     }
 
 
@@ -205,6 +205,91 @@ class TestStagingSafety:
         result = LoadDispatcher(spec, spark, local_config).dispatch()
         assert result.success is False
         assert result.exception_if_any is not None
+
+
+def _table_version(spark, table: str) -> int | None:
+    if not spark.catalog.tableExists(table):
+        return None
+    row = spark.sql(f"DESCRIBE HISTORY {table}").orderBy("version", ascending=False).first()
+    return int(row["version"]) if row and row["version"] is not None else None
+
+
+def _seed_append_target(spark, target: str) -> None:
+    spark.createDataFrame([(10, "seed")], ["id", "value"]).write.format(
+        "delta"
+    ).mode("overwrite").saveAsTable(f"regression.{target}")
+    spark.sql(
+        f"ALTER TABLE regression.{target} "
+        f"SET TBLPROPERTIES ('data.load_type' = 'APPEND_LOAD')"
+    )
+
+
+class TestSourceUnchangedSkip:
+    @pytest.mark.parametrize(
+        "load_type,target",
+        [
+            ("FULL_LOAD", "tgt_skip_full"),
+            ("INCREMENTAL_CDC", "tgt_skip_cdc"),
+            ("SCD_TYPE_2", "tgt_skip_scd2"),
+        ],
+    )
+    def test_second_run_skips_without_touching_target_or_staging(
+        self, spark, local_config, source_table, load_type, target
+    ):
+        _drop_target(spark, target)
+        spec = _master_spec(
+            100,
+            load_type,
+            target,
+            _feed_specs(source_table),
+        )
+        first = LoadDispatcher(spec, spark, local_config).dispatch()
+        assert first.success is True
+        assert first.skipped is False
+
+        target_fqn = f"regression.{target}"
+        staging_full = f"staging.t_full_{target}"
+        target_version = _table_version(spark, target_fqn)
+        staging_version = _table_version(spark, staging_full)
+        assert target_version is not None
+        assert staging_version is not None
+
+        second = LoadDispatcher(spec, spark, local_config).dispatch()
+        assert second.success is True
+        assert second.skipped is True
+        assert second.total_rows_inserted == 0
+        assert _table_version(spark, target_fqn) == target_version
+        assert _table_version(spark, staging_full) == staging_version
+
+    def test_append_second_run_skips_without_touching_target_or_staging(
+        self, spark, local_config, source_table
+    ):
+        target = "tgt_skip_append"
+        _drop_target(spark, target)
+        _seed_append_target(spark, target)
+        spec = _master_spec(
+            101,
+            "APPEND_LOAD",
+            target,
+            _feed_specs(source_table),
+        )
+        first = LoadDispatcher(spec, spark, local_config).dispatch()
+        assert first.success is True
+        assert first.skipped is False
+
+        target_fqn = f"regression.{target}"
+        staging_full = f"staging.t_full_{target}"
+        target_version = _table_version(spark, target_fqn)
+        staging_version = _table_version(spark, staging_full)
+        assert target_version is not None
+        assert staging_version is not None
+
+        second = LoadDispatcher(spec, spark, local_config).dispatch()
+        assert second.success is True
+        assert second.skipped is True
+        assert second.total_rows_inserted == 0
+        assert _table_version(spark, target_fqn) == target_version
+        assert _table_version(spark, staging_full) == staging_version
 
 
 class TestLoadDispatcher:

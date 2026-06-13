@@ -1,6 +1,6 @@
 # Data quality
 
-Applies to **medallion** feeds only (`data_flow_direction != SOURCE_TO_BRONZE`). Configured in `feed_specs.standard_checks` and `feed_specs.comprehensive_checks`.
+Applies to **`WITHIN_UNITY_CATALOG`** feeds only. Configured in `feed_specs.standard_checks` and `feed_specs.comprehensive_checks`.
 
 ## Pipeline order
 
@@ -123,7 +123,7 @@ Under `{file_hunt_path}/{outbound_directory_name}/results_{run_id}_*.xlsx`:
 | Dashboard | Per-feed DQ summary flags |
 | Standard Check Result | Exploded standard check rows |
 | Comprehensive Check Result | All PRE_LOAD + POST_LOAD rows (`load_stage`, `status`, `failed_records`, …) |
-| Feed Status (B-G) | Full feed DQ manifest |
+| Feed Status (`{source_schema}-{target_schema}`) | Full feed DQ manifest (e.g. `Feed Status (demo-silver)`) |
 
 Dashboard columns: `standard_checks_configured`, `standard_checks_passed`, `comprehensive_pre_load_configured`, `comprehensive_pre_load_passed`, `comprehensive_post_load_configured`, `comprehensive_post_load_passed`, `can_ingest`.
 

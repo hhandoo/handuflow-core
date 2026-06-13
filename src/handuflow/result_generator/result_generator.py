@@ -18,6 +18,7 @@ from handuflow.exception.result_generation_exception import ResultGenerationExce
 from handuflow.config.run_logger import log_step
 from handuflow.exception.base_exception import BaseException
 from handuflow.data_movement_controller.data_class.load_result import LoadResult
+from handuflow.system_shared.route_labels import feed_route_label
 
 class ResultGenerator():
 
@@ -40,6 +41,7 @@ class ResultGenerator():
         self.save_path = None
         self.logger = logging.getLogger(__name__)
         self.config = config
+        self.load_results = load_results
 
         self.dashboard_cols = [
             "feed_id",
@@ -55,6 +57,11 @@ class ResultGenerator():
             "comprehensive_post_load_configured",
             "comprehensive_post_load_passed",
             "can_ingest",
+            "load_success",
+            "load_skipped",
+            "load_rows_inserted",
+            "load_status",
+            "ingest_block_reason",
         ]
 
         self.sheets.append(
@@ -72,6 +79,8 @@ class ResultGenerator():
         try:
             log_step(self.logger, "result_generator", status="START", run_id=self.run_id)
             self.__segregate_results()
+            self.__merge_load_results_into_feed_status()
+            self.__apply_dq_block_status()
             self.__generate_full_feed_status()
             self.__generate_standard_results()
             self.__generate_comprehensive_results()
@@ -109,14 +118,32 @@ class ResultGenerator():
             }
         )
 
+    def __feed_route_for_row(self, row: dict) -> str:
+        source = (
+            row.get("source_table_name")
+            or row.get("check_table_name")
+            or ""
+        )
+        return feed_route_label(
+            source_table_name=str(source) if source else None,
+            target_schema_name=row.get("target_schema_name"),
+            target_table_path=row.get("target_table_path"),
+        )
+
     def __generate_full_feed_status(self):
         if not self.final_feed_status:
             return
-        final_feed_status_df = pd.DataFrame(self.final_feed_status)
-        col = "feed_id"
-        final_feed_status_df.insert(0, col, final_feed_status_df.pop(col))
-        final_feed_status_df = final_feed_status_df.sort_values(by=col)
-        self.__sheet_generator(final_feed_status_df, "Feed Status (B-G)")
+        routes: dict[str, list[dict]] = {}
+        for row in self.final_feed_status:
+            route = self.__feed_route_for_row(row)
+            routes.setdefault(route, []).append(row)
+        for route in sorted(routes):
+            final_feed_status_df = pd.DataFrame(routes[route])
+            col = "feed_id"
+            if col in final_feed_status_df.columns:
+                final_feed_status_df.insert(0, col, final_feed_status_df.pop(col))
+                final_feed_status_df = final_feed_status_df.sort_values(by=col)
+            self.__sheet_generator(final_feed_status_df, f"Feed Status ({route})")
 
     def __generate_standard_results(self):
         rows_with_checks = [
@@ -265,4 +292,60 @@ class ResultGenerator():
                 error_code="HF082",
                 original_exception=e,
             )
+
+    def __merge_load_results_into_feed_status(self) -> None:
+        if not self.load_results:
+            return
+        load_by_feed = {r.feed_id: r for r in self.load_results}
+        for row in self.final_feed_status:
+            load = load_by_feed.get(row.get("feed_id"))
+            if load is None:
+                continue
+            row["load_success"] = load.success
+            row["load_skipped"] = load.skipped
+            row["load_rows_inserted"] = load.total_rows_inserted
+            if load.skipped:
+                row["load_status"] = "SKIPPED"
+            elif load.success:
+                row["load_status"] = "SUCCESS"
+            else:
+                row["load_status"] = "FAILED"
+
+        covered = {row.get("feed_id") for row in self.final_feed_status}
+        for load in self.load_results:
+            if load.feed_id in covered:
+                continue
+            status = (
+                "SKIPPED"
+                if load.skipped
+                else ("SUCCESS" if load.success else "FAILED")
+            )
+            self.final_feed_status.append(
+                {
+                    "feed_id": load.feed_id,
+                    "load_success": load.success,
+                    "load_skipped": load.skipped,
+                    "load_rows_inserted": load.total_rows_inserted,
+                    "load_status": status,
+                    "target_table_path": load.target_table_path,
+                }
+            )
+
+    def __apply_dq_block_status(self) -> None:
+        """Mark feeds blocked by pre-load DQ when no load was attempted."""
+        from handuflow.data_quality.runner.feed_data_quality_runner import (
+            FeedDataQualityRunner,
+        )
+
+        for row in self.final_feed_status:
+            if row.get("can_ingest") is not False or row.get("load_status"):
+                continue
+            reason = row.get("ingest_block_reason") or FeedDataQualityRunner.ingest_block_reason(
+                row
+            )
+            row["ingest_block_reason"] = reason
+            row["load_success"] = False
+            row["load_skipped"] = False
+            row.setdefault("load_rows_inserted", 0)
+            row["load_status"] = "BLOCKED"
 

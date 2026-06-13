@@ -64,10 +64,21 @@ spark.sql("CREATE DATABASE IF NOT EXISTS silver")
 
 # # update operation
 
-# spark.sql("delete from demo.test where english = 'Germany';")
+#spark.sql("delete from demo.test where english = 'India';")
 
 
-#spark.sql("update demo.test set english = 'Updated_USA' where alpha3_b = 'USA1';")
+# spark.sql("update demo.test set english = 'Updated_USA' where alpha3_b = 'USA2';")
+
+
+spark.sql("""
+INSERT INTO demo.test
+VALUES (
+    'USA102341',
+    'US102341',
+    'US',
+    'United States'
+)
+""")
 
 
 
